@@ -14,6 +14,7 @@
     "report": "tsx src/cli-report.ts",
     "recalc": "tsx src/cli-recalc.ts",
     "sync": "tsx src/cli-sync.ts",
+    "sync-server": "tsx src/sync-to-server.ts",
     "dashboard": "tsx src/dashboard.ts",
     "build": "tsc",
     "start": "node dist/main.js",
