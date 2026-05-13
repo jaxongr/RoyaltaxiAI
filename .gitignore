@@ -1,0 +1,38 @@
+node_modules/
+.env
+.env.local
+.env.production
+storage-state.json
+*.log
+logs/
+dist/
+dist-admin/
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+screenshots/
+.DS_Store
+.vscode/
+.idea/
+playwright-report/
+test-results/
+
+# Loyihaga oid maxsus
+explore-output/
+debug-*.png
+dumps/
+files*.zip
+AUTOMATION.md
+CLAUDE_CODE_PROMPT.md
+
+# Admin
+admin/node_modules/
+admin/dist/
+admin/.vite/
+
+# Memory
+.claude/
+
+# OS
+Thumbs.db

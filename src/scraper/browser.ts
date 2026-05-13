@@ -1,0 +1,82 @@
+import { existsSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
+import { config } from '../common/config.js';
+import { childLogger } from '../common/logger.js';
+
+const log = childLogger('browser');
+
+export const STORAGE_STATE_PATH = resolve(process.cwd(), 'storage-state.json');
+
+export interface BrowserSession {
+  browser: Browser;
+  context: BrowserContext;
+  page: Page;
+}
+
+export async function createBrowserSession(): Promise<BrowserSession> {
+  log.info({ headless: config.BROWSER_HEADLESS }, 'Chromium ishga tushirilmoqda');
+
+  const browser = await chromium.launch({
+    headless: config.BROWSER_HEADLESS,
+    args: [
+      '--disable-blink-features=AutomationControlled',
+      '--disable-dev-shm-usage',
+      '--no-sandbox',
+    ],
+  });
+
+  const hasStorageState = existsSync(STORAGE_STATE_PATH);
+  if (hasStorageState) {
+    log.info({ path: STORAGE_STATE_PATH }, 'Saqlangan session topildi, yuklanmoqda');
+  } else {
+    log.info('Session topilmadi, yangi login kerak');
+  }
+
+  const context = await browser.newContext({
+    storageState: hasStorageState ? STORAGE_STATE_PATH : undefined,
+    viewport: { width: 1440, height: 900 },
+    deviceScaleFactor: 1.0,
+    locale: 'ru-RU',
+    timezoneId: 'Asia/Tashkent',
+    userAgent:
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+      '(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+    extraHTTPHeaders: {
+      'Accept-Language': 'ru-RU,ru;q=0.9,uz;q=0.8,en;q=0.7',
+    },
+  });
+
+  // Sekin yurish — bot-like aniqlanmaslik uchun
+  context.setDefaultNavigationTimeout(30_000);
+  context.setDefaultTimeout(15_000);
+
+  const page = await context.newPage();
+
+  return { browser, context, page };
+}
+
+export async function saveSession(context: BrowserContext): Promise<void> {
+  await context.storageState({ path: STORAGE_STATE_PATH });
+  log.info({ path: STORAGE_STATE_PATH }, 'Session saqlandi');
+}
+
+export async function closeBrowserSession(session: BrowserSession): Promise<void> {
+  try {
+    await session.context.close();
+  } catch (err) {
+    log.warn({ err }, 'Context yopishda xato');
+  }
+  try {
+    await session.browser.close();
+  } catch (err) {
+    log.warn({ err }, 'Browser yopishda xato');
+  }
+  log.info('Brauzer yopildi');
+}
+
+/** Insonsimon pauza — agressiv scraping'dan qochish */
+export async function humanPause(min = 2000, max = 5000): Promise<void> {
+  const ms = Math.floor(Math.random() * (max - min + 1)) + min;
+  await new Promise((r) => setTimeout(r, ms));
+}

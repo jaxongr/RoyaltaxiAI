@@ -1,0 +1,36 @@
+{
+  "name": "royaltaxi-ai",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Royaltaxi AI Dispetcher — Playwright bilan taksi dashboardni kuzatish va firibgarlikni aniqlash",
+  "type": "module",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "dev": "tsx src/main.ts",
+    "monitor": "tsx src/realtime.ts",
+    "alerts": "tsx src/cli-alerts.ts",
+    "report": "tsx src/cli-report.ts",
+    "recalc": "tsx src/cli-recalc.ts",
+    "sync": "tsx src/cli-sync.ts",
+    "dashboard": "tsx src/dashboard.ts",
+    "build": "tsc",
+    "start": "node dist/main.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.9.0",
+    "dotenv": "^16.4.5",
+    "pino": "^9.5.0",
+    "pino-pretty": "^11.3.0",
+    "playwright": "^1.48.2",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.9.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3"
+  }
+}
