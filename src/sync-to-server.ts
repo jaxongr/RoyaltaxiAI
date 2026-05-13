@@ -144,11 +144,25 @@ async function main(): Promise<void> {
     'Server sync boshlandi',
   );
 
+  let syncing = false;
+  const runTick = async (): Promise<void> => {
+    if (syncing) {
+      logger.warn('Avvalgi sync hali tugamadi — keyingi skip');
+      return;
+    }
+    syncing = true;
+    try {
+      await tick(pscp, plink);
+    } finally {
+      syncing = false;
+    }
+  };
+
   // birinchi tick darhol
-  await tick(pscp, plink);
+  await runTick();
 
   setInterval(() => {
-    void tick(pscp, plink);
+    void runTick();
   }, INTERVAL_MIN * 60 * 1000);
 
   // never resolves

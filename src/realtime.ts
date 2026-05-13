@@ -287,6 +287,88 @@ async function bootSession(archiveUrl: string): Promise<BrowserSession> {
   return session;
 }
 
+/**
+ * Startup'da bugun 00:00 dan hozirgi vaqtgacha bo'lgan zakazlarni tortib oladi.
+ * Bu ish faqat birinchi yoqilishda yoki monitor uzun vaqt yopilgan bo'lsa kerak.
+ * Hisoblash: agar DB'da bugungi zakazlarning soni sayt'da yo'qlari'dan kichik bo'lsa,
+ * backfill ishga tushadi.
+ */
+async function startupBackfill(
+  session: BrowserSession,
+  db: Database.Database,
+  concurrency: number,
+): Promise<void> {
+  // Bugun 00:00 dan hozirgacha
+  const now = new Date();
+  const dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const periodStart = formatTs(dayStart);
+  const periodEnd = formatTs(new Date(now.getTime() + 5 * 60 * 1000));
+
+  // Avval sayt nima deyishini olamiz (totalCount)
+  const probe = await getOrders(session.page, {
+    offset: 0, limit: 1, periodStart, periodEnd,
+  });
+  const siteToday = probe.state?.total ?? 0;
+
+  const today = now.toISOString().slice(0, 10);
+  const ourToday = (
+    db.prepare(`SELECT COUNT(*) as c FROM orders WHERE date = ?`).get(today) as { c: number }
+  ).c;
+
+  const gap = siteToday - ourToday;
+  if (gap < 50) {
+    logger.info(
+      { siteToday, ourToday, gap },
+      'Backfill kerak emas — bugungi DB to\'liq',
+    );
+    return;
+  }
+
+  logger.info({ siteToday, ourToday, gap }, '⏪ STARTUP BACKFILL boshlanmoqda...');
+
+  // Paginate qilib bugungi to'liq zakazlarni torta-versi
+  const BATCH = 200;
+  let offset = 0;
+  let inserted = 0;
+  let skipped = 0;
+  const startedAt = Date.now();
+  const haveStmt = db.prepare('SELECT 1 FROM orders WHERE order_id = ?');
+
+  while (offset < siteToday + 500) {
+    const resp = await getOrders(session.page, {
+      offset, limit: BATCH, periodStart, periodEnd,
+    });
+    const items = resp.state?.items ?? [];
+    if (items.length === 0) break;
+
+    const newOnes = items.filter((it) => !haveStmt.get(it.orderId));
+    if (newOnes.length > 0) {
+      const details = await mapLimit(newOnes, concurrency, (it) =>
+        getOrderDetails(session.page, it.orderId).catch(() => null),
+      );
+      for (let i = 0; i < newOnes.length; i++) {
+        const row = toDbOrder(newOnes[i]!, details[i] ?? null);
+        const res = insertOrder(db, row);
+        if (res === 'inserted') inserted++;
+        else skipped++;
+      }
+    }
+
+    offset += items.length;
+    const elapsed = (Date.now() - startedAt) / 1000;
+    const rate = inserted / Math.max(1, elapsed);
+    logger.info(
+      { offset, inserted, skipped, ratePerSec: Math.round(rate * 10) / 10 },
+      'Backfill batch',
+    );
+
+    if (items.length < BATCH) break;
+  }
+
+  const totalSec = Math.round((Date.now() - startedAt) / 1000);
+  logger.info({ inserted, skipped, totalSec }, '✅ STARTUP BACKFILL tugadi');
+}
+
 interface MonitorStats {
   startedAt: number;
   ticks: number;
@@ -444,6 +526,16 @@ async function main(): Promise<void> {
       session = await bootSession(archiveUrl);
       logger.info('Sahifa tayyor — monitoring siklini boshlaymiz');
       bootRetry = 0;
+
+      // Startup backfill — bugun 00:00 dan tortib olmagan zakazlarni to'ldiramiz
+      // Faqat birinchi sessiyada (qayta-tiklashda emas)
+      if (stats.ticks === 0) {
+        try {
+          await startupBackfill(session, db, concurrency);
+        } catch (err) {
+          logger.warn({ err: (err as Error).message }, 'Backfill xato — keyin davom etamiz');
+        }
+      }
 
       let consecutiveErrors = 0;
       while (true) {

@@ -8,10 +8,11 @@ import { createServer } from 'node:http';
 import { parse as parseUrl } from 'node:url';
 import { resolve, extname } from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
-import { openDb, DB_PATH } from './db.js';
+import { openDb, DB_PATH, insertAlert, markOrderFraud, upsertDriverBlock } from './db.js';
 import { logger } from './common/logger.js';
 import { config } from './common/config.js';
-import { FRAUD_THRESHOLDS } from './fraud/rules.js';
+import { FRAUD_THRESHOLDS, scoreOrder } from './fraud/rules.js';
+import type { OrderRow } from './db.js';
 
 const PORT = parseInt(process.env.DASHBOARD_PORT ?? '4000', 10);
 const db = openDb();
@@ -915,6 +916,102 @@ const MIME: Record<string, string> = {
   '.woff2': 'font/woff2',
 };
 
+interface AnalysisResult {
+  ok: boolean;
+  duration_ms: number;
+  alerts_before: number;
+  alerts_after: number;
+  blocks_before: number;
+  blocks_after: number;
+  top_drivers: Array<{ callsign: string; driver_name: string; cnt: number; total: number }>;
+}
+
+function handleRunAnalysis(): AnalysisResult {
+  const t0 = Date.now();
+  const alertsBefore = (db.prepare('SELECT COUNT(*) as c FROM fraud_alerts').get() as { c: number }).c;
+  const blocksBefore = (db.prepare('SELECT COUNT(*) as c FROM driver_blocks').get() as { c: number }).c;
+
+  // 1. Eski alertlarni va belgilarni tozalash
+  db.exec('DELETE FROM fraud_alerts');
+  db.exec('DELETE FROM driver_blocks');
+  db.exec('UPDATE orders SET fraud_score = 0, fraud_reasons = NULL, alerted_at = NULL WHERE false_positive = 0');
+
+  // 2. Barcha finish zakazlarni qaytadan baholash
+  const rows = db
+    .prepare(
+      `SELECT order_id, callsign, date, time, region, service, tariff, address,
+              driver_name, car, client_phone, driver_phones, amount, distance_km,
+              status, raw_text, is_driver_crook, submission_time, finish_time, duration_sec,
+              source, cancel_kind, cancel_comment
+       FROM orders WHERE status = 'finish' AND COALESCE(false_positive, 0) = 0`,
+    )
+    .all() as OrderRow[];
+
+  let alertsAdded = 0;
+  for (const o of rows) {
+    const res = scoreOrder(db, o);
+    if (res.score < FRAUD_THRESHOLDS.ALERT) continue;
+    insertAlert(db, {
+      order_id: o.order_id,
+      callsign: o.callsign,
+      driver_name: o.driver_name,
+      fraud_type: res.primaryType,
+      fraud_score: res.score,
+      details: res.reasons.join(' | '),
+    });
+    markOrderFraud(db, o.order_id, res.score, res.reasons);
+    alertsAdded++;
+  }
+
+  // 3. Haydovchi bo'yicha agregatsiya — yangi blok tavsiyalari
+  const drv = db
+    .prepare(
+      `SELECT callsign, driver_name, COUNT(*) as cnt, SUM(fraud_score) as total, MAX(fraud_score) as maxs
+       FROM fraud_alerts WHERE callsign != ''
+       AND date(created_at) >= date('now', '-7 days')
+       GROUP BY callsign, driver_name
+       HAVING total >= ? OR cnt >= ? OR maxs >= ?`,
+    )
+    .all(
+      FRAUD_THRESHOLDS.WEEKLY_TOTAL_BLOCK,
+      FRAUD_THRESHOLDS.WEEKLY_COUNT_BLOCK,
+      FRAUD_THRESHOLDS.AUTO_BLOCK,
+    ) as { callsign: string; driver_name: string; cnt: number; total: number; maxs: number }[];
+
+  for (const d of drv) {
+    upsertDriverBlock(db, d.callsign, d.driver_name, 'RUN_ANALYSIS', d.total, d.cnt);
+  }
+
+  const alertsAfter = (db.prepare('SELECT COUNT(*) as c FROM fraud_alerts').get() as { c: number }).c;
+  const blocksAfter = (db.prepare('SELECT COUNT(*) as c FROM driver_blocks').get() as { c: number }).c;
+
+  // Top 10 shubhali haydovchilar
+  const topDrivers = db
+    .prepare(
+      `SELECT callsign, driver_name, COUNT(*) as cnt, SUM(fraud_score) as total
+       FROM fraud_alerts WHERE callsign != ''
+       GROUP BY callsign, driver_name
+       ORDER BY total DESC LIMIT 10`,
+    )
+    .all() as { callsign: string; driver_name: string; cnt: number; total: number }[];
+
+  // Audit log
+  db.prepare(
+    `INSERT INTO audit_log (action, target_type, actor, details)
+     VALUES ('run_analysis', 'system', 'web', ?)`,
+  ).run(`+${alertsAdded} alert, ${drv.length} blok`);
+
+  return {
+    ok: true,
+    duration_ms: Date.now() - t0,
+    alerts_before: alertsBefore,
+    alerts_after: alertsAfter,
+    blocks_before: blocksBefore,
+    blocks_after: blocksAfter,
+    top_drivers: topDrivers,
+  };
+}
+
 async function handleTelegramTest(): Promise<{ ok: boolean; error?: string }> {
   if (!config.TELEGRAM_BOT_TOKEN || !config.TELEGRAM_CHAT_ID) {
     return { ok: false, error: '.env da TELEGRAM_BOT_TOKEN va TELEGRAM_CHAT_ID kerak' };
@@ -954,6 +1051,16 @@ const server = createServer(async (req, res) => {
   if (req.method === 'POST' && path === '/api/system/test-telegram') {
     const result = await handleTelegramTest();
     send(res, result.ok ? 200 : 400, result);
+    return;
+  }
+
+  if (req.method === 'POST' && path === '/api/system/run-analysis') {
+    try {
+      const result = handleRunAnalysis();
+      send(res, 200, result);
+    } catch (err) {
+      send(res, 500, { ok: false, error: (err as Error).message });
+    }
     return;
   }
 
