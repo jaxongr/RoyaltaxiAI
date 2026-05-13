@@ -7,12 +7,12 @@
 import { createServer } from 'node:http';
 import { parse as parseUrl } from 'node:url';
 import { resolve, extname } from 'node:path';
-import { existsSync, readFileSync } from 'node:fs';
-import { openDb, DB_PATH, insertAlert, markOrderFraud, upsertDriverBlock } from './db.js';
+import { existsSync, readFileSync, appendFileSync, writeFileSync, statSync, readFile } from 'node:fs';
+import { spawn, type ChildProcess } from 'node:child_process';
+import { openDb, DB_PATH } from './db.js';
 import { logger } from './common/logger.js';
 import { config } from './common/config.js';
-import { FRAUD_THRESHOLDS, scoreOrder } from './fraud/rules.js';
-import type { OrderRow } from './db.js';
+import { FRAUD_THRESHOLDS } from './fraud/rules.js';
 
 const PORT = parseInt(process.env.DASHBOARD_PORT ?? '4000', 10);
 const db = openDb();
@@ -916,101 +916,92 @@ const MIME: Record<string, string> = {
   '.woff2': 'font/woff2',
 };
 
-interface AnalysisResult {
-  ok: boolean;
-  duration_ms: number;
-  alerts_before: number;
-  alerts_after: number;
-  blocks_before: number;
-  blocks_after: number;
-  top_drivers: Array<{ callsign: string; driver_name: string; cnt: number; total: number }>;
+// ===== MONITOR CONTROLLER (dashboard'dan monitor'ni boshqarish) =====
+let monitorProc: ChildProcess | null = null;
+const MONITOR_LOG = resolve(process.cwd(), 'monitor.log');
+const MAX_LOG_LINES = 200;
+
+function isMonitorRunning(): boolean {
+  if (!monitorProc) return false;
+  return monitorProc.pid != null && monitorProc.exitCode === null;
 }
 
-function handleRunAnalysis(): AnalysisResult {
-  const t0 = Date.now();
-  const alertsBefore = (db.prepare('SELECT COUNT(*) as c FROM fraud_alerts').get() as { c: number }).c;
-  const blocksBefore = (db.prepare('SELECT COUNT(*) as c FROM driver_blocks').get() as { c: number }).c;
+function appendLog(line: string): void {
+  try {
+    appendFileSync(MONITOR_LOG, line);
+  } catch { /* ignore */ }
+}
 
-  // 1. Eski alertlarni va belgilarni tozalash
-  db.exec('DELETE FROM fraud_alerts');
-  db.exec('DELETE FROM driver_blocks');
-  db.exec('UPDATE orders SET fraud_score = 0, fraud_reasons = NULL, alerted_at = NULL WHERE false_positive = 0');
-
-  // 2. Barcha finish zakazlarni qaytadan baholash
-  const rows = db
-    .prepare(
-      `SELECT order_id, callsign, date, time, region, service, tariff, address,
-              driver_name, car, client_phone, driver_phones, amount, distance_km,
-              status, raw_text, is_driver_crook, submission_time, finish_time, duration_sec,
-              source, cancel_kind, cancel_comment
-       FROM orders WHERE status = 'finish' AND COALESCE(false_positive, 0) = 0`,
-    )
-    .all() as OrderRow[];
-
-  let alertsAdded = 0;
-  for (const o of rows) {
-    const res = scoreOrder(db, o);
-    if (res.score < FRAUD_THRESHOLDS.ALERT) continue;
-    insertAlert(db, {
-      order_id: o.order_id,
-      callsign: o.callsign,
-      driver_name: o.driver_name,
-      fraud_type: res.primaryType,
-      fraud_score: res.score,
-      details: res.reasons.join(' | '),
+function startMonitor(): { ok: boolean; pid?: number; error?: string } {
+  if (isMonitorRunning()) {
+    return { ok: false, error: 'Monitor allaqachon ishlamoqda', pid: monitorProc!.pid };
+  }
+  try {
+    // log faylni tozalaymiz (oxirgi sessiyani)
+    writeFileSync(MONITOR_LOG, `\n=== MONITOR ${new Date().toISOString()} ===\n`);
+    const tsx = resolve(process.cwd(), 'node_modules', '.bin', process.platform === 'win32' ? 'tsx.cmd' : 'tsx');
+    const script = resolve(process.cwd(), 'src', 'realtime.ts');
+    monitorProc = spawn(tsx, [script], {
+      cwd: process.cwd(),
+      env: { ...process.env, NODE_ENV: process.env.NODE_ENV ?? 'production' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+      detached: false,
+      shell: false,
     });
-    markOrderFraud(db, o.order_id, res.score, res.reasons);
-    alertsAdded++;
+    monitorProc.stdout?.on('data', (b: Buffer) => appendLog(b.toString()));
+    monitorProc.stderr?.on('data', (b: Buffer) => appendLog(b.toString()));
+    monitorProc.on('exit', (code) => {
+      appendLog(`\n=== MONITOR EXITED code=${code} at ${new Date().toISOString()} ===\n`);
+      monitorProc = null;
+    });
+    return { ok: true, pid: monitorProc.pid };
+  } catch (err) {
+    monitorProc = null;
+    return { ok: false, error: (err as Error).message };
   }
+}
 
-  // 3. Haydovchi bo'yicha agregatsiya — yangi blok tavsiyalari
-  const drv = db
-    .prepare(
-      `SELECT callsign, driver_name, COUNT(*) as cnt, SUM(fraud_score) as total, MAX(fraud_score) as maxs
-       FROM fraud_alerts WHERE callsign != ''
-       AND date(created_at) >= date('now', '-7 days')
-       GROUP BY callsign, driver_name
-       HAVING total >= ? OR cnt >= ? OR maxs >= ?`,
-    )
-    .all(
-      FRAUD_THRESHOLDS.WEEKLY_TOTAL_BLOCK,
-      FRAUD_THRESHOLDS.WEEKLY_COUNT_BLOCK,
-      FRAUD_THRESHOLDS.AUTO_BLOCK,
-    ) as { callsign: string; driver_name: string; cnt: number; total: number; maxs: number }[];
-
-  for (const d of drv) {
-    upsertDriverBlock(db, d.callsign, d.driver_name, 'RUN_ANALYSIS', d.total, d.cnt);
+function stopMonitor(): { ok: boolean; error?: string } {
+  if (!isMonitorRunning()) {
+    return { ok: false, error: 'Monitor allaqachon to\'xtagan' };
   }
+  try {
+    if (process.platform === 'win32') {
+      // Windows'da SIGINT ishlamaydi, kill kerak
+      spawn('taskkill', ['/F', '/T', '/PID', String(monitorProc!.pid)]);
+    } else {
+      monitorProc!.kill('SIGTERM');
+    }
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: (err as Error).message };
+  }
+}
 
-  const alertsAfter = (db.prepare('SELECT COUNT(*) as c FROM fraud_alerts').get() as { c: number }).c;
-  const blocksAfter = (db.prepare('SELECT COUNT(*) as c FROM driver_blocks').get() as { c: number }).c;
-
-  // Top 10 shubhali haydovchilar
-  const topDrivers = db
-    .prepare(
-      `SELECT callsign, driver_name, COUNT(*) as cnt, SUM(fraud_score) as total
-       FROM fraud_alerts WHERE callsign != ''
-       GROUP BY callsign, driver_name
-       ORDER BY total DESC LIMIT 10`,
-    )
-    .all() as { callsign: string; driver_name: string; cnt: number; total: number }[];
-
-  // Audit log
-  db.prepare(
-    `INSERT INTO audit_log (action, target_type, actor, details)
-     VALUES ('run_analysis', 'system', 'web', ?)`,
-  ).run(`+${alertsAdded} alert, ${drv.length} blok`);
-
+function getMonitorStatus(): {
+  running: boolean;
+  pid: number | null;
+  uptimeSec: number | null;
+  lastLogLines: string[];
+} {
+  let lastLines: string[] = [];
+  try {
+    if (existsSync(MONITOR_LOG)) {
+      const text = readFileSync(MONITOR_LOG, 'utf-8');
+      const all = text.split('\n');
+      lastLines = all.slice(-MAX_LOG_LINES);
+    }
+  } catch { /* ignore */ }
   return {
-    ok: true,
-    duration_ms: Date.now() - t0,
-    alerts_before: alertsBefore,
-    alerts_after: alertsAfter,
-    blocks_before: blocksBefore,
-    blocks_after: blocksAfter,
-    top_drivers: topDrivers,
+    running: isMonitorRunning(),
+    pid: monitorProc?.pid ?? null,
+    uptimeSec: null, // could add if we track startedAt
+    lastLogLines: lastLines,
   };
 }
+
+void readFile; // bekor import emas
+void statSync; // bekor emas (kelajakda)
 
 async function handleTelegramTest(): Promise<{ ok: boolean; error?: string }> {
   if (!config.TELEGRAM_BOT_TOKEN || !config.TELEGRAM_CHAT_ID) {
@@ -1054,13 +1045,17 @@ const server = createServer(async (req, res) => {
     return;
   }
 
-  if (req.method === 'POST' && path === '/api/system/run-analysis') {
-    try {
-      const result = handleRunAnalysis();
-      send(res, 200, result);
-    } catch (err) {
-      send(res, 500, { ok: false, error: (err as Error).message });
-    }
+  // Monitor control endpoints
+  if (req.method === 'POST' && path === '/api/monitor/start') {
+    send(res, 200, startMonitor());
+    return;
+  }
+  if (req.method === 'POST' && path === '/api/monitor/stop') {
+    send(res, 200, stopMonitor());
+    return;
+  }
+  if (path === '/api/monitor/status') {
+    send(res, 200, getMonitorStatus());
     return;
   }
 

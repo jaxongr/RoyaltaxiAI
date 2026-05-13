@@ -1,8 +1,14 @@
-import { Card, Row, Col, Descriptions, Tag, Button, App, Statistic, Alert } from 'antd';
-import { ThunderboltOutlined } from '@ant-design/icons';
-import { useQuery } from '@tanstack/react-query';
-import { useState } from 'react';
+import { Card, Row, Col, Descriptions, Tag, Button, App, Statistic, Alert, Space } from 'antd';
+import { ThunderboltOutlined, PlayCircleOutlined, StopOutlined } from '@ant-design/icons';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../lib/api';
+
+interface MonitorStatus {
+  running: boolean;
+  pid: number | null;
+  uptimeSec: number | null;
+  lastLogLines: string[];
+}
 
 interface SystemResp {
   monitor: {
@@ -18,24 +24,38 @@ interface SystemResp {
   db: { path: string; orders: number; alerts: number; blocks: number };
 }
 
-interface AnalysisResult {
-  ok: boolean;
-  duration_ms: number;
-  alerts_before: number;
-  alerts_after: number;
-  blocks_before: number;
-  blocks_after: number;
-  top_drivers: Array<{ callsign: string; driver_name: string; cnt: number; total: number }>;
-}
-
 export default function SettingsPage(): JSX.Element {
   const { message } = App.useApp();
-  const [running, setRunning] = useState(false);
-  const [result, setResult] = useState<AnalysisResult | null>(null);
+  const qc = useQueryClient();
   const { data } = useQuery<SystemResp>({
     queryKey: ['system'],
     queryFn: () => api.get('/system').then((r) => r.data),
     refetchInterval: 5000,
+  });
+
+  const { data: monitor } = useQuery<MonitorStatus>({
+    queryKey: ['monitor-status'],
+    queryFn: () => api.get('/monitor/status').then((r) => r.data),
+    refetchInterval: 2000,
+  });
+
+  const startMutation = useMutation({
+    mutationFn: () => api.post('/monitor/start'),
+    onSuccess: (r) => {
+      if (r.data.ok) message.success(`Monitor ishga tushdi (PID: ${r.data.pid})`);
+      else message.error(r.data.error ?? 'Xato');
+      qc.invalidateQueries({ queryKey: ['monitor-status'] });
+    },
+    onError: (e: Error) => message.error('Xato: ' + e.message),
+  });
+
+  const stopMutation = useMutation({
+    mutationFn: () => api.post('/monitor/stop'),
+    onSuccess: () => {
+      message.success('Monitor to\'xtatildi');
+      qc.invalidateQueries({ queryKey: ['monitor-status'] });
+    },
+    onError: (e: Error) => message.error('Xato: ' + e.message),
   });
 
   const sendTest = async (): Promise<void> => {
@@ -48,77 +68,84 @@ export default function SettingsPage(): JSX.Element {
     }
   };
 
-  const runAnalysis = async (): Promise<void> => {
-    setRunning(true);
-    setResult(null);
-    try {
-      const r = await api.post<AnalysisResult>('/system/run-analysis');
-      setResult(r.data);
-      message.success(`Tahlil tugadi — ${r.data.alerts_after - r.data.alerts_before} yangi alert topildi`);
-    } catch (e) {
-      message.error('Tahlilda xato: ' + (e as Error).message);
-    } finally {
-      setRunning(false);
-    }
+  const openAnalysis = (): void => {
+    window.open('/alerts', '_blank');
   };
+
+  const tail = monitor?.lastLogLines.slice(-30) ?? [];
+  const logText = tail.join('\n');
 
   return (
     <Row gutter={[12, 12]}>
       <Col span={24}>
         <Card
-          title="⚡ Tahlilni qaytadan ishga tushirish"
+          title={
+            <Space>
+              <span>🎛 Monitor boshqaruvi</span>
+              {monitor?.running ? (
+                <Tag color="success" style={{ marginLeft: 8 }}>● ISHLAMOQDA (PID {monitor.pid})</Tag>
+              ) : (
+                <Tag style={{ marginLeft: 8 }}>● TO'XTAGAN</Tag>
+              )}
+            </Space>
+          }
           extra={
-            <Button
-              type="primary"
-              icon={<ThunderboltOutlined />}
-              loading={running}
-              onClick={runAnalysis}
-              size="large"
-            >
-              {running ? 'Ishlamoqda...' : 'TAHLIL ISHGA TUSHIR'}
-            </Button>
+            <Space>
+              <Button
+                type="primary"
+                icon={<PlayCircleOutlined />}
+                onClick={() => startMutation.mutate()}
+                loading={startMutation.isPending}
+                disabled={monitor?.running}
+                size="large"
+              >
+                🚀 MONITORNI ISHGA TUSHIR
+              </Button>
+              <Button
+                danger
+                icon={<StopOutlined />}
+                onClick={() => stopMutation.mutate()}
+                loading={stopMutation.isPending}
+                disabled={!monitor?.running}
+                size="large"
+              >
+                ⏹ TO'XTATISH
+              </Button>
+              <Button
+                icon={<ThunderboltOutlined />}
+                onClick={openAnalysis}
+                size="large"
+              >
+                Tahlil oynasi
+              </Button>
+            </Space>
           }
         >
-          <p style={{ color: '#6B7280', margin: 0 }}>
-            Barcha mavjud zakazlarni qoidalar dvigateli orqali <b>qaytadan baholash</b>.
-            Yangi qoidalar yoki o'zgartirilgan chegaralar bilan firibgarliklarni qaytadan topadi.
-            <br />
-            <b>Vaqti:</b> ~10-30 sekund (ma'lumotning miqdoriga qarab).
+          <p style={{ color: '#6B7280', marginBottom: 12 }}>
+            Bu tugmalar <b>shu kompyuter</b>da monitor jarayonini boshqaradi (UZ PC).
+            Ishga tushirgandan keyin har 5 sekundda sayt tekshiriladi, shubhali zakazlar
+            Telegramga yuboriladi.
           </p>
-          {result && (
-            <Alert
-              style={{ marginTop: 12 }}
-              type="success"
-              showIcon
-              message={`✅ Tahlil yakunlandi (${(result.duration_ms / 1000).toFixed(1)} sekund)`}
-              description={
-                <div>
-                  <p style={{ margin: '4px 0' }}>
-                    Alertlar: <b>{result.alerts_before}</b> → <b>{result.alerts_after}</b>
-                    {' '}({result.alerts_after > result.alerts_before ? '+' : ''}
-                    {result.alerts_after - result.alerts_before})
-                  </p>
-                  <p style={{ margin: '4px 0' }}>
-                    Bloklar: <b>{result.blocks_before}</b> → <b>{result.blocks_after}</b>
-                    {' '}({result.blocks_after > result.blocks_before ? '+' : ''}
-                    {result.blocks_after - result.blocks_before})
-                  </p>
-                  {result.top_drivers.length > 0 && (
-                    <div style={{ marginTop: 8 }}>
-                      <b>Top 5 shubhali haydovchilar:</b>
-                      <ol style={{ margin: '4px 0', paddingLeft: 24 }}>
-                        {result.top_drivers.slice(0, 5).map((d) => (
-                          <li key={d.callsign}>
-                            <Tag>{d.callsign}</Tag> {d.driver_name} — <b>{d.cnt}</b> alert, {d.total} ball
-                          </li>
-                        ))}
-                      </ol>
-                    </div>
-                  )}
-                </div>
-              }
-            />
-          )}
+          <div style={{ marginTop: 12 }}>
+            <div style={{ fontSize: 13, color: '#6B7280', marginBottom: 4 }}>
+              📜 <b>Jonli log (oxirgi 30 satr):</b>
+            </div>
+            <pre
+              style={{
+                background: '#0f1115',
+                color: '#a3e635',
+                padding: 12,
+                borderRadius: 6,
+                fontSize: 11,
+                maxHeight: 280,
+                overflow: 'auto',
+                margin: 0,
+                fontFamily: 'Consolas, Menlo, monospace',
+              }}
+            >
+              {logText || 'Log bo\'sh — monitor hali yoqilmagan.'}
+            </pre>
+          </div>
         </Card>
       </Col>
       <Col xs={24} md={12}>
