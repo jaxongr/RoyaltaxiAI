@@ -166,16 +166,37 @@ export const fmtNarx = (n: number | null | undefined): string => {
   return `${n.toLocaleString('ru-RU')} so'm`;
 };
 
+/**
+ * SQLite vaqtni UZ vaqtida ko'rsatish.
+ * - DB'dagi CURRENT_TIMESTAMP har doim UTC (SQLite default)
+ * - "YYYY-MM-DD HH:MM:SS" formatda (T, Z yo'q) → UTC deb hisoblanadi
+ * - ISO format (Z bilan) ham UTC sifatida tushuniladi
+ * - Brauzer locale qaysi bo'lishidan qat'iy nazar — UZ vaqtida ko'rsatiladi
+ */
+function toUtcIso(ts: string): string {
+  if (ts.includes('T')) {
+    return ts.endsWith('Z') || /[+-]\d{2}:?\d{2}$/.test(ts) ? ts : ts + 'Z';
+  }
+  // "2026-05-14 14:37:56" → "2026-05-14T14:37:56Z"
+  return ts.replace(' ', 'T') + 'Z';
+}
+
 export const fmtTime = (ts: string | null | undefined): string => {
   if (!ts) return '—';
-  const iso = ts.includes('T') ? ts : `${ts.replace(' ', 'T')}+05:00`;
-  return new Date(iso).toLocaleString('ru-RU', { dateStyle: 'short', timeStyle: 'medium' });
+  return new Date(toUtcIso(ts)).toLocaleString('ru-RU', {
+    dateStyle: 'short',
+    timeStyle: 'medium',
+    timeZone: 'Asia/Tashkent',
+  });
 };
 
 export const fmtTimeShort = (ts: string | null | undefined): string => {
   if (!ts) return '—';
-  const iso = ts.includes('T') ? ts : `${ts.replace(' ', 'T')}+05:00`;
-  return new Date(iso).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+  return new Date(toUtcIso(ts)).toLocaleTimeString('ru-RU', {
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZone: 'Asia/Tashkent',
+  });
 };
 
 export const statusLabel = (s: string): string => {

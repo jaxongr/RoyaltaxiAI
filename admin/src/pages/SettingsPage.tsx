@@ -1,7 +1,7 @@
 import { Card, Row, Col, Descriptions, Tag, Button, App, Statistic, Alert, Space } from 'antd';
 import { ThunderboltOutlined, PlayCircleOutlined, StopOutlined } from '@ant-design/icons';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { api } from '../lib/api';
+import { api, fmtTime } from '../lib/api';
 
 interface MonitorStatus {
   running: boolean;
@@ -164,7 +164,7 @@ export default function SettingsPage(): JSX.Element {
             <Alert type="error" message={data.monitor.last_error} style={{ marginTop: 12 }} />
           )}
           <Descriptions size="small" column={1} bordered style={{ marginTop: 12 }}>
-            <Descriptions.Item label="Oxirgi tick">{data?.monitor.last_tick_at ?? '—'}</Descriptions.Item>
+            <Descriptions.Item label="Oxirgi tick">{fmtTime(data?.monitor.last_tick_at)}</Descriptions.Item>
             <Descriptions.Item label="Sayt bugun">{data?.monitor.site_total_today ?? '—'}</Descriptions.Item>
             <Descriptions.Item label="DB bugun">{data?.monitor.our_count_today ?? '—'}</Descriptions.Item>
           </Descriptions>
