@@ -296,6 +296,29 @@ async function tick(
   }
 }
 
+/**
+ * DB'da faol credential bormi tekshiradi. Bor bo'lsa env'ni qaytaradi (override).
+ * Aks holda .env qiymatlari ishlatiladi.
+ */
+function applyActiveCredentialFromDb(db: Database.Database): void {
+  const row = db
+    .prepare(
+      `SELECT base_url, username, password FROM site_credentials WHERE is_active = 1 LIMIT 1`,
+    )
+    .get() as { base_url: string; username: string; password: string } | undefined;
+  if (row) {
+    process.env.ROYALTAXI_BASE_URL = row.base_url;
+    process.env.ROYALTAXI_USERNAME = row.username;
+    process.env.ROYALTAXI_PASSWORD = row.password;
+    logger.info(
+      { url: row.base_url, user: row.username },
+      'DB dan faol credential yuklandi (.env override)',
+    );
+  } else {
+    logger.info('DB da faol credential yo\'q — .env qiymatlari ishlatiladi');
+  }
+}
+
 async function bootSession(archiveUrl: string): Promise<BrowserSession> {
   const session = await createBrowserSession();
   await login(session);
@@ -494,6 +517,7 @@ async function main(): Promise<void> {
   );
 
   const db = openDb();
+  applyActiveCredentialFromDb(db);
   const stats: MonitorStats = {
     startedAt: Date.now(),
     ticks: 0,

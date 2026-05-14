@@ -40,10 +40,14 @@ async function fillLoginForm(page: Page): Promise<void> {
     .or(page.locator('button[type="submit"]'))
     .first();
 
-  await loginInput.fill(config.ROYALTAXI_USERNAME);
+  // DB orqali yuklab olingan credential (process.env override) yoki .env default
+  const username = process.env.ROYALTAXI_USERNAME ?? config.ROYALTAXI_USERNAME;
+  const password = process.env.ROYALTAXI_PASSWORD ?? config.ROYALTAXI_PASSWORD;
+
+  await loginInput.fill(username);
   await humanPause(400, 900);
 
-  await passInput.fill(config.ROYALTAXI_PASSWORD);
+  await passInput.fill(password);
   await humanPause(400, 900);
 
   log.info({ url: page.url() }, 'Login submit');
@@ -52,7 +56,8 @@ async function fillLoginForm(page: Page): Promise<void> {
 
 async function attemptLogin(session: BrowserSession, attempt: number): Promise<boolean> {
   const { page, context } = session;
-  const managementUrl = `${config.ROYALTAXI_BASE_URL}${URLS.dashboard}`;
+  const baseUrl = process.env.ROYALTAXI_BASE_URL ?? config.ROYALTAXI_BASE_URL;
+  const managementUrl = `${baseUrl}${URLS.dashboard}`;
 
   log.info({ managementUrl, attempt }, 'Management sahifasiga o\'tamiz');
   await page

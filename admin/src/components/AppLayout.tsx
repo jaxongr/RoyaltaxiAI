@@ -13,6 +13,7 @@ import {
   PhoneOutlined,
   AuditOutlined,
   UserOutlined,
+  GlobalOutlined,
 } from '@ant-design/icons';
 import { useNavigate, useLocation, Outlet } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
@@ -34,6 +35,7 @@ const items = [
   { key: '/stats', icon: <BarChartOutlined />, label: 'Statistika' },
   { key: '/reports', icon: <FileTextOutlined />, label: 'Hisobotlar' },
   { key: '/audit', icon: <AuditOutlined />, label: 'Audit log' },
+  { key: '/sites', icon: <GlobalOutlined />, label: 'Saytlar' },
   { key: '/settings', icon: <SettingOutlined />, label: 'Sozlamalar' },
 ];
 

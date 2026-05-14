@@ -172,6 +172,18 @@ CREATE TABLE IF NOT EXISTS audit_log (
 );
 CREATE INDEX IF NOT EXISTS idx_audit_target ON audit_log(target_type, target_id);
 CREATE INDEX IF NOT EXISTS idx_audit_time ON audit_log(created_at);
+
+CREATE TABLE IF NOT EXISTS site_credentials (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  base_url TEXT NOT NULL,
+  username TEXT NOT NULL,
+  password TEXT NOT NULL,
+  is_active INTEGER DEFAULT 0,
+  note TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
 `;
 
 export interface OrderRow {

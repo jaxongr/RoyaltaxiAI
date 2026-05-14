@@ -8,6 +8,7 @@ import DriversFullPage from './pages/DriversFullPage';
 import ClientsPage from './pages/ClientsPage';
 import BlacklistPage from './pages/BlacklistPage';
 import AuditPage from './pages/AuditPage';
+import SitesPage from './pages/SitesPage';
 import AlertsPage from './pages/AlertsPage';
 import BlocksPage from './pages/BlocksPage';
 import OrdersPage from './pages/OrdersPage';
@@ -36,6 +37,7 @@ export default function App(): JSX.Element {
         <Route path="/clients" element={<ClientsPage />} />
         <Route path="/blacklist" element={<BlacklistPage />} />
         <Route path="/audit" element={<AuditPage />} />
+        <Route path="/sites" element={<SitesPage />} />
         <Route path="/alerts" element={<AlertsPage />} />
         <Route path="/blocks" element={<BlocksPage />} />
         <Route path="/orders" element={<OrdersPage />} />

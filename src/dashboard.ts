@@ -857,6 +857,19 @@ const ROUTES: Record<string, (q: URLSearchParams) => unknown> = {
     return { items };
   },
 
+  '/api/sites': () => {
+    const items = db
+      .prepare(
+        `SELECT id, name, base_url, username,
+                CASE WHEN length(password) > 0 THEN '***' ELSE '' END as password_mask,
+                is_active, note, created_at, updated_at
+         FROM site_credentials
+         ORDER BY is_active DESC, id ASC`,
+      )
+      .all();
+    return { items };
+  },
+
   '/api/audit-log': (q) => {
     const limit = Math.min(parseInt(q.get('limit') ?? '100', 10), 1000);
     const items = db
@@ -1163,6 +1176,95 @@ const server = createServer(async (req, res) => {
   }
   if (path === '/api/monitor/status') {
     send(res, 200, getMonitorStatus());
+    return;
+  }
+
+  // Saytlar (credentials) CRUD
+  if (req.method === 'POST' && path.startsWith('/api/sites')) {
+    try {
+      const chunks: Buffer[] = [];
+      await new Promise<void>((resolve, reject) => {
+        req.on('data', (c) => chunks.push(c as Buffer));
+        req.on('end', () => resolve());
+        req.on('error', reject);
+      });
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf-8') || '{}');
+
+      // POST /api/sites — yaratish
+      if (path === '/api/sites') {
+        if (!body.name || !body.base_url || !body.username || !body.password) {
+          send(res, 400, { ok: false, error: 'Nom, URL, login, parol kerak' });
+          return;
+        }
+        const r = db
+          .prepare(
+            `INSERT INTO site_credentials (name, base_url, username, password, note)
+             VALUES (?, ?, ?, ?, ?)`,
+          )
+          .run(body.name, body.base_url, body.username, body.password, body.note ?? '');
+        db.prepare(
+          `INSERT INTO audit_log (action, target_type, target_id, actor) VALUES ('site_add', 'site', ?, 'web')`,
+        ).run(String(r.lastInsertRowid));
+        send(res, 200, { ok: true, id: r.lastInsertRowid });
+        return;
+      }
+
+      // POST /api/sites/:id — yangilash
+      const updateMatch = path.match(/^\/api\/sites\/(\d+)$/);
+      if (updateMatch) {
+        const id = parseInt(updateMatch[1]!, 10);
+        const sets: string[] = [];
+        const vals: unknown[] = [];
+        for (const f of ['name', 'base_url', 'username', 'password', 'note']) {
+          if (body[f] !== undefined) {
+            sets.push(`${f} = ?`);
+            vals.push(body[f]);
+          }
+        }
+        if (sets.length === 0) {
+          send(res, 400, { ok: false, error: 'O\'zgartirish uchun maydon kerak' });
+          return;
+        }
+        sets.push('updated_at = CURRENT_TIMESTAMP');
+        db.prepare(`UPDATE site_credentials SET ${sets.join(', ')} WHERE id = ?`).run(...vals, id);
+        db.prepare(
+          `INSERT INTO audit_log (action, target_type, target_id, actor) VALUES ('site_edit', 'site', ?, 'web')`,
+        ).run(String(id));
+        send(res, 200, { ok: true });
+        return;
+      }
+
+      // POST /api/sites/:id/activate
+      const activateMatch = path.match(/^\/api\/sites\/(\d+)\/activate$/);
+      if (activateMatch) {
+        const id = parseInt(activateMatch[1]!, 10);
+        const tx = db.transaction(() => {
+          db.prepare(`UPDATE site_credentials SET is_active = 0`).run();
+          db.prepare(`UPDATE site_credentials SET is_active = 1 WHERE id = ?`).run(id);
+        });
+        tx();
+        db.prepare(
+          `INSERT INTO audit_log (action, target_type, target_id, actor) VALUES ('site_activate', 'site', ?, 'web')`,
+        ).run(String(id));
+        send(res, 200, { ok: true });
+        return;
+      }
+
+      send(res, 404, { ok: false, error: 'Yo\'l noma\'lum' });
+      return;
+    } catch (err) {
+      send(res, 500, { ok: false, error: (err as Error).message });
+      return;
+    }
+  }
+
+  if (req.method === 'DELETE' && path.match(/^\/api\/sites\/(\d+)$/)) {
+    const id = parseInt(path.split('/')[3]!, 10);
+    db.prepare(`DELETE FROM site_credentials WHERE id = ?`).run(id);
+    db.prepare(
+      `INSERT INTO audit_log (action, target_type, target_id, actor) VALUES ('site_delete', 'site', ?, 'web')`,
+    ).run(String(id));
+    send(res, 200, { ok: true });
     return;
   }
 
