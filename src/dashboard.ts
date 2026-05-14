@@ -975,6 +975,100 @@ const MIME: Record<string, string> = {
   '.woff2': 'font/woff2',
 };
 
+// ===== BLOCK SESSION — doimiy ochiq Playwright (tezroq bloklash uchun) =====
+import type { BrowserSession } from './scraper/browser.js';
+import { createBrowserSession, closeBrowserSession, humanPause } from './scraper/browser.js';
+import { login } from './scraper/auth.js';
+import { getDrivers, lockDriver } from './scraper/drivers.js';
+
+let blockSession: BrowserSession | null = null;
+let blockSessionLastUsed = 0;
+const BLOCK_SESSION_IDLE_MS = 30 * 60 * 1000; // 30 min idle keyin yopiladi
+
+async function getOrCreateBlockSession(): Promise<BrowserSession> {
+  if (blockSession) {
+    // Sessiya hayotda ekanini tekshirish
+    try {
+      const url = blockSession.page.url();
+      if (url && !blockSession.page.isClosed()) {
+        blockSessionLastUsed = Date.now();
+        return blockSession;
+      }
+    } catch { /* fall through */ }
+    try { await closeBrowserSession(blockSession); } catch { /* ignore */ }
+    blockSession = null;
+  }
+  logger.info('Block sessiyasi yaratilmoqda...');
+  // BROWSER_HEADLESS env'siz default false; biz har doim headless ishlatamiz block uchun
+  const env = process.env.BROWSER_HEADLESS;
+  process.env.BROWSER_HEADLESS = 'true';
+  // PROXY_URL ham sozlangan bo'lishi kerak (.env'dan)
+  blockSession = await createBrowserSession();
+  if (env === undefined) delete process.env.BROWSER_HEADLESS;
+  else process.env.BROWSER_HEADLESS = env;
+  await login(blockSession);
+  await blockSession.page.goto(config.ROYALTAXI_BASE_URL + '/management/archive', {
+    waitUntil: 'domcontentloaded',
+    timeout: 30_000,
+  });
+  await humanPause(2000, 3000);
+  await blockSession.page.waitForSelector('.hv-table__body-row.hv-table__body-row--body', {
+    timeout: 20_000,
+  });
+  blockSessionLastUsed = Date.now();
+  logger.info('Block sessiyasi tayyor');
+  return blockSession;
+}
+
+// Idle session'ni yopib turuvchi
+setInterval(() => {
+  if (blockSession && Date.now() - blockSessionLastUsed > BLOCK_SESSION_IDLE_MS) {
+    logger.info('Block sessiyasi 30 daqiqa ishlatilmadi — yopilmoqda');
+    closeBrowserSession(blockSession).catch(() => undefined);
+    blockSession = null;
+  }
+}, 5 * 60 * 1000);
+
+async function blockDriverFast(callsign: string, kind: string, comment: string, due: string | null): Promise<{
+  ok: boolean;
+  driverId?: string;
+  officeId?: number;
+  driverName?: string;
+  error?: string;
+}> {
+  const session = await getOrCreateBlockSession();
+  try {
+    const found = await getDrivers(session.page, { query: callsign, limit: 5, includingDocuments: true } as never);
+    const items = found.state?.items ?? [];
+    if (items.length === 0) return { ok: false, error: `Haydovchi topilmadi: ${callsign}` };
+    const real = items[0]!.items?.[0];
+    if (!real) return { ok: false, error: `${callsign} items bo'sh` };
+    const result = await lockDriver(session.page, {
+      driverId: real.driverId,
+      officeId: real.officeId,
+      kind,
+      comment,
+      due,
+    });
+    const r = result as { status?: boolean; message?: string };
+    if (r.status === false) {
+      return { ok: false, error: `Sayt rad qildi: ${r.message ?? '?'}`, driverId: real.driverId, officeId: real.officeId };
+    }
+    blockSessionLastUsed = Date.now();
+    return {
+      ok: true,
+      driverId: real.driverId,
+      officeId: real.officeId,
+      driverName: `${real.lastName} ${real.firstName}`.trim(),
+    };
+  } catch (err) {
+    // Sessiya buzilgan bo'lsa, qayta yaratish uchun belgilash
+    try { await closeBrowserSession(session); } catch { /* ignore */ }
+    blockSession = null;
+    return { ok: false, error: (err as Error).message };
+  }
+}
+
 // ===== MONITOR CONTROLLER (dashboard'dan monitor'ni boshqarish) =====
 let monitorProc: ChildProcess | null = null;
 const MONITOR_LOG = resolve(process.cwd(), 'monitor.log');
@@ -1332,53 +1426,19 @@ const server = createServer(async (req, res) => {
         send(res, 400, { ok: false, error: 'callsign kerak' });
         return;
       }
-      // DB'da driver nomi (faqat log uchun, callsign asosiy)
-      const driver = db
-        .prepare(`SELECT first_name, last_name FROM drivers WHERE callsign = ? LIMIT 1`)
-        .get(callsign) as { first_name: string; last_name: string } | undefined;
-      const driverName = driver
-        ? `${driver.last_name} ${driver.first_name}`.trim()
-        : callsign;
-
       db.prepare(
         `INSERT INTO audit_log (action, target_type, target_id, actor, details)
          VALUES ('site_block_request', 'driver', ?, ?, ?)`,
       ).run(callsign, v.username ?? 'web', `${kind} | ${reason} | due=${due}`);
 
-      // cli-block-driver.ts (callsign orqali sayt'dan qidirib bloklaydi)
-      const isWin = process.platform === 'win32';
-      const cmd = isWin ? 'npx.cmd' : 'npx';
-      const args = ['tsx', isWin ? '"src/cli-block-driver.ts"' : 'src/cli-block-driver.ts',
-        callsign, kind, reason, due ? '7' : '0'];
-
-      const blockProc = spawn(cmd, args, {
-        cwd: process.cwd(),
-        env: { ...process.env, BROWSER_HEADLESS: 'true' },
-        stdio: ['ignore', 'pipe', 'pipe'],
-        shell: isWin,
-      });
-      let stdout = '';
-      let stderr = '';
-      blockProc.stdout?.on('data', (b: Buffer) => { stdout += b.toString(); });
-      blockProc.stderr?.on('data', (b: Buffer) => { stderr += b.toString(); });
-      const exitCode = await new Promise<number>((resolve) => {
-        blockProc.on('exit', (code) => resolve(code ?? -1));
-        setTimeout(() => { try { blockProc.kill(); } catch {} resolve(-2); }, 60_000);
-      });
-
-      // Natija JSON satrini topish (oxirgi {"ok": ...})
-      const jsonMatch = stdout.match(/\{[^\n]*"ok"[^\n]*\}\s*$/m);
-      let result: { ok: boolean; error?: string } = { ok: false, error: 'Javob topilmadi' };
-      if (jsonMatch) {
-        try { result = JSON.parse(jsonMatch[0]); } catch { /* keep default */ }
-      }
+      // Doimiy ochiq Playwright sessiya orqali — 2-3 sek
+      const result = await blockDriverFast(callsign, kind, reason, due);
 
       if (result.ok) {
-        // DB'da blok qilingani yozamiz
         db.prepare(
           `INSERT OR REPLACE INTO driver_blocks (callsign, driver_name, reason, total_score, alert_count, applied)
            VALUES (?, ?, ?, 0, 0, 1)`,
-        ).run(callsign, driverName, `MANUAL: ${reason}`);
+        ).run(callsign, result.driverName ?? callsign, `MANUAL: ${reason}`);
         db.prepare(
           `INSERT INTO audit_log (action, target_type, target_id, actor, details)
            VALUES ('site_block_done', 'driver', ?, ?, ?)`,
@@ -1387,18 +1447,16 @@ const server = createServer(async (req, res) => {
         db.prepare(
           `INSERT INTO audit_log (action, target_type, target_id, actor, details)
            VALUES ('site_block_failed', 'driver', ?, ?, ?)`,
-        ).run(callsign, v.username ?? 'web', `error=${result.error ?? 'noma\'lum'} stderr=${stderr.slice(0, 200)}`);
+        ).run(callsign, v.username ?? 'web', `error=${result.error ?? 'noma\'lum'}`);
       }
 
       send(res, result.ok ? 200 : 500, {
         ok: result.ok,
         error: result.error,
-        driver: driverName,
+        driver: result.driverName ?? callsign,
         callsign,
         kind,
         reason,
-        exitCode,
-        stdout: stdout.slice(-500),
       });
       return;
     } catch (err) {
