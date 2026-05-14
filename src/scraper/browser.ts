@@ -15,7 +15,13 @@ export interface BrowserSession {
 }
 
 export async function createBrowserSession(): Promise<BrowserSession> {
-  log.info({ headless: config.BROWSER_HEADLESS }, 'Chromium ishga tushirilmoqda');
+  // PROXY_URL .env dan keladi (masalan: socks5://127.0.0.1:1080)
+  // Uz VPS chisel tunnel orqali sayt'ga UZ uy IP bilan ulanadi
+  const proxyUrl = process.env.PROXY_URL ?? undefined;
+  log.info(
+    { headless: config.BROWSER_HEADLESS, proxy: proxyUrl ?? 'yo\'q' },
+    'Chromium ishga tushirilmoqda',
+  );
 
   const browser = await chromium.launch({
     headless: config.BROWSER_HEADLESS,
@@ -24,6 +30,7 @@ export async function createBrowserSession(): Promise<BrowserSession> {
       '--disable-dev-shm-usage',
       '--no-sandbox',
     ],
+    proxy: proxyUrl ? { server: proxyUrl } : undefined,
   });
 
   const hasStorageState = existsSync(STORAGE_STATE_PATH);

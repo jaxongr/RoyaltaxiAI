@@ -78,6 +78,8 @@ LOG_LEVEL=info
 BROWSER_HEADLESS=true
 NODE_ENV=production
 DASHBOARD_PORT=4000
+# Chisel tunnel orqali Uy PC IP'sidan sayt'ga ulanish
+PROXY_URL=socks5://127.0.0.1:1080
 EOF
     chmod 600 /opt/royaltaxi/.env
 fi
