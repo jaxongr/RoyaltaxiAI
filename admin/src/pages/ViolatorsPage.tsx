@@ -122,9 +122,9 @@ export default function ViolatorsPage(): JSX.Element {
               render: (v) => (v > 0 ? <Tag color="warning">{v}</Tag> : '0'),
             },
             {
-              title: 'Alert',
+              title: 'Ogohlantirish',
               dataIndex: 'alert_count',
-              width: 90,
+              width: 110,
               render: (v) => <Tag color="warning">{v}</Tag>,
               sorter: (a, b) => a.alert_count - b.alert_count,
             },
@@ -172,7 +172,7 @@ export default function ViolatorsPage(): JSX.Element {
                   >
                     Ko'rish
                   </Button>
-                  {!r.site_locked && r.driver_id ? (
+                  {!r.site_locked && (
                     <Button
                       size="small"
                       danger
@@ -181,11 +181,7 @@ export default function ViolatorsPage(): JSX.Element {
                     >
                       Bloklash
                     </Button>
-                  ) : !r.driver_id ? (
-                    <Tooltip title="Driver ID yo'q. Avval npm run sync qiling.">
-                      <Button size="small" disabled icon={<StopOutlined />}>Bloklash</Button>
-                    </Tooltip>
-                  ) : null}
+                  )}
                 </span>
               ),
             },

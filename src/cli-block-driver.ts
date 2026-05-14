@@ -1,22 +1,23 @@
 /**
  * Bitta marta haydovchini sayt orqali bloklash (CLI).
- * Foydalanish: npm exec tsx src/cli-block-driver.ts <driver_id> <office_id> <kind> "<comment>" [duration_days]
+ * Foydalanish: npm exec tsx src/cli-block-driver.ts <callsign> <kind> "<comment>" [duration_days]
  * Default kind: moderation
+ *
+ * Haydovchini callsign orqali sayt'da qidiradi, keyin lock-driver chaqiradi.
  */
 import { createBrowserSession, closeBrowserSession, humanPause } from './scraper/browser.js';
 import { login } from './scraper/auth.js';
-import { lockDriver } from './scraper/drivers.js';
+import { lockDriver, getDrivers, getDriverDetails } from './scraper/drivers.js';
 import { config } from './common/config.js';
 import { logger } from './common/logger.js';
 
-const driverId = process.argv[2];
-const officeId = process.argv[3];
-const kind = process.argv[4] ?? 'moderation';
-const comment = process.argv[5] ?? 'Royaltaxi AI: avtomatik aniqlangan firibgarlik';
-const durationDaysStr = process.argv[6];
+const callsign = process.argv[2];
+const kind = process.argv[3] ?? 'moderation';
+const comment = process.argv[4] ?? 'Royaltaxi AI: aniqlangan firibgarlik';
+const durationDaysStr = process.argv[5];
 
-if (!driverId || !officeId) {
-  console.error(JSON.stringify({ ok: false, error: 'driver_id va office_id kerak' }));
+if (!callsign) {
+  console.log(JSON.stringify({ ok: false, error: 'callsign kerak' }));
   process.exit(1);
 }
 
@@ -31,7 +32,6 @@ if (durationDaysStr) {
 const session = await createBrowserSession();
 try {
   await login(session);
-  // Sahifani ochish (CSRF + cookies)
   await session.page.goto(config.ROYALTAXI_BASE_URL + '/management/archive', {
     waitUntil: 'domcontentloaded',
     timeout: 30_000,
@@ -41,7 +41,26 @@ try {
     timeout: 20_000,
   });
 
-  logger.info({ driverId, officeId, kind, comment, due }, 'Sayt blok so\'rovi yuborilmoqda');
+  // 1) Saytdan callsign bo'yicha haydovchini topish
+  logger.info({ callsign }, 'Haydovchini saytdan qidirmoqda');
+  const found = await getDrivers(session.page, { query: callsign, limit: 5 });
+  const items = found.state?.items ?? [];
+  if (items.length === 0) {
+    console.log(JSON.stringify({ ok: false, error: `Haydovchi topilmadi: ${callsign}` }));
+    process.exit(1);
+  }
+  const driver = items[0]!;
+  const driverId = driver.id;
+  const officeId = String(driver.officeId ?? '');
+  const fleetId = String(driver.fleetId ?? '');
+
+  if (!officeId || !fleetId) {
+    // Driver details orqali olish
+    const details = await getDriverDetails(session.page, driverId, fleetId || '0', officeId || '0');
+    logger.info({ details: details.driverId }, 'Details olindi');
+  }
+
+  logger.info({ driverId, officeId, kind, comment, due }, 'Bloklash so\'rovi yuborilmoqda');
 
   const result = await lockDriver(session.page, {
     driverId,
@@ -51,7 +70,7 @@ try {
     due,
   });
 
-  console.log(JSON.stringify({ ok: true, result }));
+  console.log(JSON.stringify({ ok: true, driverId, officeId, result }));
 } catch (err) {
   console.log(JSON.stringify({ ok: false, error: (err as Error).message }));
   process.exitCode = 1;

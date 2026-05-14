@@ -1332,23 +1332,24 @@ const server = createServer(async (req, res) => {
         send(res, 400, { ok: false, error: 'callsign kerak' });
         return;
       }
+      // DB'da driver nomi (faqat log uchun, callsign asosiy)
       const driver = db
-        .prepare(`SELECT driver_id, office_id, first_name, last_name FROM drivers WHERE callsign = ? LIMIT 1`)
-        .get(callsign) as { driver_id: string; office_id: string; first_name: string; last_name: string } | undefined;
-      if (!driver) {
-        send(res, 404, { ok: false, error: 'Haydovchi DB da topilmadi — avval npm run sync qiling' });
-        return;
-      }
+        .prepare(`SELECT first_name, last_name FROM drivers WHERE callsign = ? LIMIT 1`)
+        .get(callsign) as { first_name: string; last_name: string } | undefined;
+      const driverName = driver
+        ? `${driver.last_name} ${driver.first_name}`.trim()
+        : callsign;
+
       db.prepare(
         `INSERT INTO audit_log (action, target_type, target_id, actor, details)
          VALUES ('site_block_request', 'driver', ?, ?, ?)`,
       ).run(callsign, v.username ?? 'web', `${kind} | ${reason} | due=${due}`);
 
-      // cli-block-driver.ts skriptini ishga tushiramiz (alohida Playwright session)
+      // cli-block-driver.ts (callsign orqali sayt'dan qidirib bloklaydi)
       const isWin = process.platform === 'win32';
       const cmd = isWin ? 'npx.cmd' : 'npx';
       const args = ['tsx', isWin ? '"src/cli-block-driver.ts"' : 'src/cli-block-driver.ts',
-        driver.driver_id, String(driver.office_id), kind, reason, due ? '7' : '0'];
+        callsign, kind, reason, due ? '7' : '0'];
 
       const blockProc = spawn(cmd, args, {
         cwd: process.cwd(),
@@ -1377,7 +1378,7 @@ const server = createServer(async (req, res) => {
         db.prepare(
           `INSERT OR REPLACE INTO driver_blocks (callsign, driver_name, reason, total_score, alert_count, applied)
            VALUES (?, ?, ?, 0, 0, 1)`,
-        ).run(callsign, `${driver.last_name} ${driver.first_name}`, `MANUAL: ${reason}`);
+        ).run(callsign, driverName, `MANUAL: ${reason}`);
         db.prepare(
           `INSERT INTO audit_log (action, target_type, target_id, actor, details)
            VALUES ('site_block_done', 'driver', ?, ?, ?)`,
@@ -1392,7 +1393,7 @@ const server = createServer(async (req, res) => {
       send(res, result.ok ? 200 : 500, {
         ok: result.ok,
         error: result.error,
-        driver: `${driver.last_name} ${driver.first_name}`,
+        driver: driverName,
         callsign,
         kind,
         reason,
