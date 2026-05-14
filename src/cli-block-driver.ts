@@ -68,8 +68,8 @@ try {
 
   // 3) Get details — bu yerdan haqiqiy driverId (15-digit numerical) keladi
   const details = await getDriverDetails(session.page, driverUuid, fleetId, officeId);
-  const driverId = details.driverId;
-  logger.info({ driverId, fromUuid: driverUuid }, 'Numerical driverId olindi');
+  const driverId = details.driverId ?? driverUuid;
+  logger.info({ details, driverId }, 'Details olindi');
 
   logger.info({ driverId, officeId, kind, comment, due }, 'Bloklash so\'rovi yuborilmoqda');
 
