@@ -84,7 +84,9 @@ function scoreCancelledOrder(db: Database.Database, o: OrderRow): RuleResult {
   let score = 0;
   let primary = '';
 
-  // "По вине водителя" — haydovchi aybi bilan bekor (eng kuchli signal)
+  if (!o.callsign) return { score: 0, reasons: [], primaryType: '' };
+
+  // "По вине водителя" — haydovchi aybi (eng kuchli signal)
   if (o.cancel_kind === 'По вине водителя') {
     score += 80;
     reasons.push('Sayt rasmiy: "Haydovchi aybi bilan bekor"');
@@ -93,24 +95,35 @@ function scoreCancelledOrder(db: Database.Database, o: OrderRow): RuleResult {
 
   // "Клиент уже уехал" — haydovchi kechikkan
   if (o.cancel_kind === 'Клиент уже уехал') {
-    score += 30;
+    score += 40;
     reasons.push('Mijoz allaqachon ketgan (haydovchi kechikkan)');
     primary = primary || 'KECHIKKAN';
   }
 
-  // Haydovchining bugungi bekorlash holati
-  if (score > 0 && o.callsign && o.date) {
+  // "Клиент не берет трубку" — mijoz qo'ng'iroq ko'tarmadi (haydovchi yetib bormaganligi)
+  if (o.cancel_kind === 'Клиент не берет трубку') {
+    score += 20;
+    reasons.push('Mijoz qo\'ng\'iroq ko\'tarmadi');
+  }
+
+  // Haydovchining BUGUNGI jami bekor qilish holati
+  if (o.date) {
     const dailyCancel = db
       .prepare(
         `SELECT COUNT(*) as c FROM orders
          WHERE callsign = ? AND date = ?
-           AND status = 'order_cancelled'
-           AND cancel_kind IN ('По вине водителя', 'Клиент уже уехал', 'Автоматически')`,
+           AND status = 'order_cancelled'`,
       )
       .get(o.callsign, o.date) as { c: number };
-    if (dailyCancel.c >= 5) {
-      score += 30;
-      reasons.push(`Bugun ${dailyCancel.c} ta shubhali bekor qilish`);
+
+    // Bugun 10+ ta bekor qilish — ko'p tanlovchi (faqat yaxshi zakazlarni oladi)
+    if (dailyCancel.c >= 10) {
+      score += 50;
+      reasons.push(`Bugun ${dailyCancel.c} ta zakazni bekor qilgan (haddan tashqari ko'p)`);
+      primary = primary || 'KO_P_BEKOR_QILUVCHI';
+    } else if (dailyCancel.c >= 5) {
+      score += 25;
+      reasons.push(`Bugun ${dailyCancel.c} ta zakazni bekor qilgan`);
       primary = primary || 'KO_P_BEKOR_QILUVCHI';
     }
   }
