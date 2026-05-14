@@ -1,5 +1,6 @@
-import { Routes, Route } from 'react-router-dom';
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import AppLayout from './components/AppLayout';
+import LoginPage from './pages/LoginPage';
 import DashboardPage from './pages/DashboardPage';
 import RegionsPage from './pages/RegionsPage';
 import DriversPage from './pages/DriversPage';
@@ -14,10 +15,20 @@ import StatsPage from './pages/StatsPage';
 import ReportsPage from './pages/ReportsPage';
 import SettingsPage from './pages/SettingsPage';
 
+function RequireAuth({ children }: { children: JSX.Element }): JSX.Element {
+  const loc = useLocation();
+  const token = localStorage.getItem('auth_token');
+  if (!token) {
+    return <Navigate to="/login" state={{ from: loc.pathname }} replace />;
+  }
+  return children;
+}
+
 export default function App(): JSX.Element {
   return (
     <Routes>
-      <Route element={<AppLayout />}>
+      <Route path="/login" element={<LoginPage />} />
+      <Route element={<RequireAuth><AppLayout /></RequireAuth>}>
         <Route index element={<DashboardPage />} />
         <Route path="/regions" element={<RegionsPage />} />
         <Route path="/drivers" element={<DriversPage />} />

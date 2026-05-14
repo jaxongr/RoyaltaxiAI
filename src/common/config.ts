@@ -11,6 +11,9 @@ const EnvSchema = z.object({
   GEMINI_API_KEY: z.string().optional(),
   TELEGRAM_BOT_TOKEN: z.string().optional(),
   TELEGRAM_CHAT_ID: z.string().optional(),
+  ADMIN_USERNAME: z.string().default('admin'),
+  ADMIN_PASSWORD: z.string().default('Royaltaxi2026'),
+  AUTH_SECRET: z.string().default('royaltaxi-secret-' + Date.now()),
   LOG_LEVEL: z
     .enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal'])
     .default('info'),

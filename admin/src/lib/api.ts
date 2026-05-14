@@ -5,6 +5,25 @@ export const api = axios.create({
   timeout: 15_000,
 });
 
+// Sahifa qayta yuklanganda token ni qaytarish
+const savedToken = localStorage.getItem('auth_token');
+if (savedToken) {
+  api.defaults.headers.common['Authorization'] = `Bearer ${savedToken}`;
+}
+
+// 401 — login sahifasiga yo'naltirish
+api.interceptors.response.use(
+  (r) => r,
+  (error) => {
+    if (error.response?.status === 401 && window.location.pathname !== '/login') {
+      localStorage.removeItem('auth_token');
+      delete api.defaults.headers.common['Authorization'];
+      window.location.href = '/login';
+    }
+    return Promise.reject(error);
+  },
+);
+
 // ===== Types =====
 export interface Overview {
   ordersToday: number;

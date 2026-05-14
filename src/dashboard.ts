@@ -9,6 +9,7 @@ import { parse as parseUrl } from 'node:url';
 import { resolve, extname } from 'node:path';
 import { existsSync, readFileSync, appendFileSync, writeFileSync, statSync, readFile } from 'node:fs';
 import { spawn, type ChildProcess } from 'node:child_process';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import { openDb, DB_PATH } from './db.js';
 import { logger } from './common/logger.js';
 import { config } from './common/config.js';
@@ -1010,6 +1011,65 @@ function getMonitorStatus(): {
 void readFile; // bekor import emas
 void statSync; // bekor emas (kelajakda)
 
+// ===== AUTH (sodda HMAC-token) =====
+const TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 kun
+
+function sign(value: string): string {
+  return createHmac('sha256', config.AUTH_SECRET).update(value).digest('base64url');
+}
+
+function makeToken(username: string): string {
+  const expires = Date.now() + TOKEN_TTL_MS;
+  const payload = `${username}:${expires}`;
+  return `${Buffer.from(payload).toString('base64url')}.${sign(payload)}`;
+}
+
+function verifyToken(token: string | null): { ok: boolean; username?: string } {
+  if (!token) return { ok: false };
+  const parts = token.split('.');
+  if (parts.length !== 2) return { ok: false };
+  const [payloadB64, sig] = parts;
+  const payload = Buffer.from(payloadB64!, 'base64url').toString('utf-8');
+  const expectedSig = sign(payload);
+  const sigBuf = Buffer.from(sig!, 'base64url');
+  const expectedBuf = Buffer.from(expectedSig, 'base64url');
+  if (sigBuf.length !== expectedBuf.length) return { ok: false };
+  if (!timingSafeEqual(sigBuf, expectedBuf)) return { ok: false };
+  const [username, expiresStr] = payload.split(':');
+  const expires = parseInt(expiresStr!, 10);
+  if (!expires || Date.now() > expires) return { ok: false };
+  return { ok: true, username };
+}
+
+function handleLogin(body: { username?: string; password?: string }): { ok: boolean; token?: string; error?: string } {
+  if (!body.username || !body.password) return { ok: false, error: 'Login va parol kerak' };
+  if (body.username !== config.ADMIN_USERNAME || body.password !== config.ADMIN_PASSWORD) {
+    return { ok: false, error: 'Login yoki parol noto\'g\'ri' };
+  }
+  return { ok: true, token: makeToken(body.username) };
+}
+
+function getAuthFromReq(req: import('node:http').IncomingMessage): string | null {
+  // Header dan
+  const h = req.headers.authorization;
+  if (h && h.startsWith('Bearer ')) return h.slice(7);
+  // Cookie dan
+  const cookie = req.headers.cookie ?? '';
+  const m = cookie.match(/auth_token=([^;]+)/);
+  if (m) return decodeURIComponent(m[1]!);
+  return null;
+}
+
+function isProtected(path: string): boolean {
+  // Login endpoint, static fayllar himoyalanmagan
+  if (path === '/api/login') return false;
+  if (path === '/login' || path === '/login.html') return false;
+  if (path.startsWith('/assets/') || path.startsWith('/icons/')) return false;
+  if (path === '/' || path.endsWith('.html') || path.endsWith('.js') || path.endsWith('.css')) return false;
+  // API endpointlar himoyalanadi
+  return path.startsWith('/api/');
+}
+
 async function handleTelegramTest(): Promise<{ ok: boolean; error?: string }> {
   if (!config.TELEGRAM_BOT_TOKEN || !config.TELEGRAM_CHAT_ID) {
     return { ok: false, error: '.env da TELEGRAM_BOT_TOKEN va TELEGRAM_CHAT_ID kerak' };
@@ -1043,6 +1103,46 @@ const server = createServer(async (req, res) => {
     res.writeHead(204);
     res.end();
     return;
+  }
+
+  // ===== AUTH endpoint =====
+  if (req.method === 'POST' && path === '/api/login') {
+    try {
+      const chunks: Buffer[] = [];
+      await new Promise<void>((resolve, reject) => {
+        req.on('data', (c) => chunks.push(c as Buffer));
+        req.on('end', () => resolve());
+        req.on('error', reject);
+      });
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf-8') || '{}');
+      const result = handleLogin(body);
+      if (result.ok) {
+        res.setHeader(
+          'Set-Cookie',
+          `auth_token=${encodeURIComponent(result.token!)}; Path=/; Max-Age=${TOKEN_TTL_MS / 1000}; SameSite=Lax; HttpOnly`,
+        );
+      }
+      send(res, result.ok ? 200 : 401, result);
+    } catch (err) {
+      send(res, 500, { ok: false, error: (err as Error).message });
+    }
+    return;
+  }
+
+  if (path === '/api/me') {
+    const token = getAuthFromReq(req);
+    const v = verifyToken(token);
+    send(res, v.ok ? 200 : 401, { ok: v.ok, username: v.username });
+    return;
+  }
+
+  // Auth protection — har bir API ga
+  if (isProtected(path)) {
+    const v = verifyToken(getAuthFromReq(req));
+    if (!v.ok) {
+      send(res, 401, { ok: false, error: 'Login kerak' });
+      return;
+    }
   }
 
   // POST endpoints
