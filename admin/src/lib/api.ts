@@ -2,7 +2,7 @@ import axios from 'axios';
 
 export const api = axios.create({
   baseURL: '/api',
-  timeout: 15_000,
+  timeout: 90_000, // 90 sek — bloklash kabi uzoq amallar uchun
 });
 
 // Sahifa qayta yuklanganda token ni qaytarish

@@ -45,6 +45,11 @@ export default function ViolatorsPage(): JSX.Element {
     refetchInterval: 15_000,
   });
 
+  const { data: lockKinds } = useQuery<{ items: Array<{ kind_id: string; name: string }> }>({
+    queryKey: ['lock-kinds'],
+    queryFn: () => api.get('/lock-kinds').then((r) => r.data),
+  });
+
   const blockMut = useMutation({
     mutationFn: (v: BlockForm) => api.post('/site-block', v),
     onSuccess: (r) => {
@@ -66,7 +71,7 @@ export default function ViolatorsPage(): JSX.Element {
       driver_id: v.driver_id ?? '',
       office_id: v.office_id ?? '',
       driver_name: v.driver_name,
-      kind: 'moderation',
+      kind: 'manual',
       reason: `Royaltaxi AI: ${v.alert_count} ta qoida buzish, ${v.total_score} ball. Turlari: ${v.fraud_types}`,
     });
   };
@@ -231,11 +236,11 @@ export default function ViolatorsPage(): JSX.Element {
           </Form.Item>
           <Form.Item name="kind" label="Blok turi (saytdagi kind)">
             <Select
-              options={[
-                { value: 'moderation', label: 'На модерации (modaratsiya)' },
-                { value: 'low-balance', label: 'Hisob bo\'sh' },
-                { value: 'expired-checkup', label: 'Texniko\'rik o\'tmagan' },
-              ]}
+              options={(lockKinds?.items ?? []).map((k) => ({
+                value: k.kind_id,
+                label: `${k.name} (${k.kind_id})`,
+              }))}
+              placeholder="Tanlang"
             />
           </Form.Item>
           <Form.Item name="reason" label="Sabab (sayt'dagi izoh)" rules={[{ required: true, message: 'Sabab kerak' }]}>

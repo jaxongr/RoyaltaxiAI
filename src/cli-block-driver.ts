@@ -70,6 +70,20 @@ try {
     due,
   });
 
+  // Sayt javobini tekshirish — status:false bo'lsa xato
+  const r = result as { status?: boolean; code?: number; message?: string };
+  const apiOk = r.status !== false;
+  if (!apiOk) {
+    console.log(JSON.stringify({
+      ok: false,
+      error: `Sayt rad qildi: ${r.message ?? 'noma\'lum xato'} (code ${r.code ?? '?'})`,
+      driverId,
+      officeId,
+      siteResponse: result,
+    }));
+    process.exit(1);
+  }
+
   console.log(JSON.stringify({ ok: true, driverId, officeId, result }));
 } catch (err) {
   console.log(JSON.stringify({ ok: false, error: (err as Error).message }));
