@@ -51,13 +51,32 @@ try {
   }
   const driver = items[0]!;
   const driverId = driver.id;
-  const officeId = String(driver.officeId ?? '');
-  const fleetId = String(driver.fleetId ?? '');
+
+  // get-drivers javobida officeId/fleetId yo'q, get-fleets'dan olamiz
+  let officeId: number = parseInt(String(driver.officeId ?? ''), 10) || 0;
+  let fleetId: number = parseInt(String(driver.fleetId ?? ''), 10) || 0;
 
   if (!officeId || !fleetId) {
-    // Driver details orqali olish
-    const details = await getDriverDetails(session.page, driverId, fleetId || '0', officeId || '0');
-    logger.info({ details: details.driverId }, 'Details olindi');
+    // Avtokolonna ro'yxatidan haydovchining fleetName ga mos keluvchini topish
+    const fleetName = driver.groupNames?.fleetName ?? '';
+    const { getFleets } = await import('./scraper/drivers.js');
+    const fleetsResp = await getFleets(session.page);
+    const match = fleetsResp.fleets.find((f) => f.name === fleetName);
+    if (match) {
+      fleetId = match.fleetId;
+      // officeId default: Qashqadaryo Royal = 239000000000004
+      officeId = 239000000000004;
+    }
+    logger.info({ fleetName, fleetId, officeId }, 'Fleet topildi');
+  }
+
+  if (!officeId || !fleetId) {
+    console.log(JSON.stringify({
+      ok: false,
+      error: `officeId yoki fleetId topilmadi (driver ${callsign})`,
+      driver,
+    }));
+    process.exit(1);
   }
 
   logger.info({ driverId, officeId, kind, comment, due }, 'Bloklash so\'rovi yuborilmoqda');
