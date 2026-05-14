@@ -9,6 +9,22 @@
 import type { Page } from 'playwright';
 import { apiPost } from './api.js';
 
+interface DriverItemNested {
+  tableId: number;
+  driverId: string;
+  officeId: number;
+  officeName: string;
+  fleetId: number;
+  fleetName: string;
+  callSign: string;
+  firstName: string;
+  lastName: string;
+  onShift: boolean;
+  online: boolean;
+  plan?: string;
+  balance?: number;
+}
+
 interface DriverItem {
   id: string;
   callsign?: string;
@@ -19,6 +35,7 @@ interface DriverItem {
   officeId?: string | number;
   onShift?: boolean;
   locked?: boolean;
+  items?: DriverItemNested[];
 }
 
 interface GetDriversResponse {

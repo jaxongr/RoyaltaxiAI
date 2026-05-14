@@ -7,7 +7,7 @@
  */
 import { createBrowserSession, closeBrowserSession, humanPause } from './scraper/browser.js';
 import { login } from './scraper/auth.js';
-import { lockDriver, getDrivers, getDriverDetails, getFleets } from './scraper/drivers.js';
+import { lockDriver, getDrivers } from './scraper/drivers.js';
 import { config } from './common/config.js';
 import { logger } from './common/logger.js';
 
@@ -49,27 +49,21 @@ try {
     console.log(JSON.stringify({ ok: false, error: `Haydovchi topilmadi: ${callsign}` }));
     process.exit(1);
   }
-  const driver = items[0]!;
-  const driverUuid = driver.id;
-
-  // 2) Fleet va office'ni topish
-  let officeId = 239000000000004; // Qashqadaryo Royal default
-  let fleetId = 0;
-  const fleetName = driver.groupNames?.fleetName ?? '';
-  const fleetsResp = await getFleets(session.page);
-  const match = fleetsResp.fleets.find((f) => f.name === fleetName);
-  if (match) fleetId = match.fleetId;
-  logger.info({ fleetName, fleetId, officeId, driverUuid }, 'Fleet topildi');
-
-  if (!fleetId) {
-    console.log(JSON.stringify({ ok: false, error: `Fleet topilmadi: ${fleetName}` }));
+  // get-drivers'da nested items'da real driverId va officeId/fleetId bor
+  const group = items[0]!;
+  const real = group.items?.[0];
+  if (!real) {
+    console.log(JSON.stringify({ ok: false, error: `${callsign} topildi lekin items bo'sh` }));
     process.exit(1);
   }
 
-  // 3) Get details — bu yerdan haqiqiy driverId (15-digit numerical) keladi
-  const details = await getDriverDetails(session.page, driverUuid, fleetId, officeId);
-  const driverId = details.driverId ?? driverUuid;
-  logger.info({ details, driverId }, 'Details olindi');
+  const driverId = real.driverId;
+  const officeId = real.officeId;
+  const fleetId = real.fleetId;
+  logger.info(
+    { driverId, officeId, fleetId, name: `${real.lastName} ${real.firstName}` },
+    'Haydovchi topildi',
+  );
 
   logger.info({ driverId, officeId, kind, comment, due }, 'Bloklash so\'rovi yuborilmoqda');
 
