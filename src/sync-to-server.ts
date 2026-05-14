@@ -97,13 +97,22 @@ async function uploadDb(pscp: string, sourcePath: string): Promise<{ ok: boolean
 }
 
 /**
- * Server'da .tmp faylni asosiy nomga rename qilish (atomic).
- * Plink orqali bitta SSH buyrug'i.
+ * Server'da DB ni xavfsiz almashtirish: dashboard'ni stop qilib, eski WAL/shm fayllarni
+ * o'chirib, yangi DB'ni rename qilib, dashboard'ni qayta yoqamiz.
+ * Bu corruption'dan saqlaydi.
  */
 async function finalizeOnServer(plink: string): Promise<void> {
   const args: string[] = ['-batch', '-pw', SERVER_PASSWORD];
   if (SERVER_HOST_KEY) args.push('-hostkey', SERVER_HOST_KEY);
-  args.push(`${SERVER_USER}@${SERVER_HOST}`, `mv ${SERVER_PATH}.tmp ${SERVER_PATH}`);
+  const remoteCmd = [
+    `pm2 stop royaltaxi-dashboard >/dev/null 2>&1`,
+    `sleep 1`,
+    `rm -f ${SERVER_PATH}-wal ${SERVER_PATH}-shm`,
+    `mv ${SERVER_PATH}.tmp ${SERVER_PATH}`,
+    `pm2 start royaltaxi-dashboard >/dev/null 2>&1`,
+    `echo OK`,
+  ].join(' && ');
+  args.push(`${SERVER_USER}@${SERVER_HOST}`, remoteCmd);
   await exec(plink, args, { maxBuffer: 1024 * 1024 });
 }
 
