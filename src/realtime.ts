@@ -371,6 +371,22 @@ async function startupBackfill(
         const res = insertOrder(db, row);
         if (res === 'inserted') inserted++;
         else skipped++;
+
+        // Fraud baholash — backfill paytida ham
+        if (row.status === 'finish') {
+          const result = scoreOrder(db, row);
+          if (result.score >= FRAUD_THRESHOLDS.ALERT) {
+            insertAlert(db, {
+              order_id: row.order_id,
+              callsign: row.callsign,
+              driver_name: row.driver_name,
+              fraud_type: result.primaryType,
+              fraud_score: result.score,
+              details: result.reasons.join(' | '),
+            });
+            markOrderFraud(db, row.order_id, result.score, result.reasons);
+          }
+        }
       }
     }
 
