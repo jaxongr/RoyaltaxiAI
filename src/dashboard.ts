@@ -939,10 +939,10 @@ function startMonitor(): { ok: boolean; pid?: number; error?: string } {
   try {
     writeFileSync(MONITOR_LOG, `\n=== MONITOR ${new Date().toISOString()} ===\n`);
     const isWin = process.platform === 'win32';
-    const script = resolve(process.cwd(), 'src', 'realtime.ts');
-    // Windows'da .cmd faylga shell kerak; Linux'da to'g'ridan-to'g'ri
+    // src/realtime.ts — cwd dan relative (bo'shliqli yo'l muammosini chetlash)
     const cmd = isWin ? 'npx.cmd' : 'npx';
-    const args = ['tsx', script];
+    // shell:true bilan argumentlar joined bo'ladi, bo'shliqli yo'llar uchun quote kerak
+    const args = isWin ? ['tsx', '"src/realtime.ts"'] : ['tsx', 'src/realtime.ts'];
     monitorProc = spawn(cmd, args, {
       cwd: process.cwd(),
       env: { ...process.env, NODE_ENV: process.env.NODE_ENV ?? 'production' },
