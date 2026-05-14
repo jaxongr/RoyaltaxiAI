@@ -273,6 +273,8 @@ async function tick(
       isBlockRecommendation: shouldBlock,
       totalScore: shouldBlock ? aggRow.total : undefined,
       alertCount: shouldBlock ? aggRow.cnt : undefined,
+      date: row.date,
+      time: row.time,
     });
   }
 

@@ -26,6 +26,8 @@ interface AlertPayload {
   isBlockRecommendation: boolean;
   totalScore?: number;
   alertCount?: number;
+  date?: string;        // zakaz sanasi "YYYY-MM-DD"
+  time?: string;        // zakaz vaqti "HH:MM"
 }
 
 function escapeHtml(s: string): string {
@@ -55,9 +57,14 @@ function formatAlert(a: AlertPayload): string {
     a.amount === null ? 'noma\'lum' : `${a.amount.toLocaleString('ru-RU')} so'm`;
   const reasons = a.reasons.map((r) => `   • ${escapeHtml(r)}`).join('\n');
 
+  const dateTime = (a.date && a.time)
+    ? `${a.date} ${a.time}`
+    : 'noma\'lum';
+
   const lines = [
     head,
     '',
+    `📅 Zakaz vaqti: <b>${escapeHtml(dateTime)}</b>`,
     `👤 Haydovchi: <b>${escapeHtml(a.driver)}</b>`,
     `🔢 Chaqiruv belgisi: <code>${escapeHtml(a.callsign || 'yo\'q')}</code>`,
     `📍 Hudud: ${escapeHtml(a.region || 'noma\'lum')} • ${escapeHtml(a.service || '')}`,
