@@ -937,19 +937,26 @@ function startMonitor(): { ok: boolean; pid?: number; error?: string } {
     return { ok: false, error: 'Monitor allaqachon ishlamoqda', pid: monitorProc!.pid };
   }
   try {
-    // log faylni tozalaymiz (oxirgi sessiyani)
     writeFileSync(MONITOR_LOG, `\n=== MONITOR ${new Date().toISOString()} ===\n`);
-    const tsx = resolve(process.cwd(), 'node_modules', '.bin', process.platform === 'win32' ? 'tsx.cmd' : 'tsx');
+    const isWin = process.platform === 'win32';
     const script = resolve(process.cwd(), 'src', 'realtime.ts');
-    monitorProc = spawn(tsx, [script], {
+    // Windows'da .cmd faylga shell kerak; Linux'da to'g'ridan-to'g'ri
+    const cmd = isWin ? 'npx.cmd' : 'npx';
+    const args = ['tsx', script];
+    monitorProc = spawn(cmd, args, {
       cwd: process.cwd(),
       env: { ...process.env, NODE_ENV: process.env.NODE_ENV ?? 'production' },
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: false,
-      shell: false,
+      shell: isWin, // .cmd uchun zarur
+      windowsHide: false,
     });
     monitorProc.stdout?.on('data', (b: Buffer) => appendLog(b.toString()));
     monitorProc.stderr?.on('data', (b: Buffer) => appendLog(b.toString()));
+    monitorProc.on('error', (err) => {
+      appendLog(`\n=== SPAWN ERROR: ${err.message} ===\n`);
+      monitorProc = null;
+    });
     monitorProc.on('exit', (code) => {
       appendLog(`\n=== MONITOR EXITED code=${code} at ${new Date().toISOString()} ===\n`);
       monitorProc = null;
