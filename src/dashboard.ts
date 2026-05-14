@@ -858,6 +858,50 @@ const ROUTES: Record<string, (q: URLSearchParams) => unknown> = {
     return { items };
   },
 
+  '/api/violators': (q) => {
+    const days = parseInt(q.get('days') ?? '7', 10);
+    const items = db
+      .prepare(
+        `SELECT
+           a.callsign,
+           MAX(a.driver_name) as driver_name,
+           (SELECT region FROM orders WHERE callsign = a.callsign AND region != '' ORDER BY id DESC LIMIT 1) as region,
+           COUNT(*) as alert_count,
+           SUM(a.fraud_score) as total_score,
+           MAX(a.fraud_score) as max_score,
+           (SELECT COUNT(*) FROM orders o WHERE o.callsign = a.callsign AND date(o.scraped_at) >= date('now', '-' || ? || ' days')) as orders_count,
+           (SELECT COUNT(*) FROM orders o WHERE o.callsign = a.callsign AND status='order_cancelled' AND date(o.scraped_at) >= date('now', '-' || ? || ' days')) as cancelled_count,
+           GROUP_CONCAT(DISTINCT a.fraud_type) as fraud_types,
+           (SELECT 1 FROM driver_blocks db2 WHERE db2.callsign = a.callsign) as our_blocked,
+           (SELECT lock_kind FROM drivers d WHERE d.callsign = a.callsign) as site_locked,
+           (SELECT driver_id FROM drivers d WHERE d.callsign = a.callsign LIMIT 1) as driver_id,
+           (SELECT office_id FROM drivers d WHERE d.callsign = a.callsign LIMIT 1) as office_id
+         FROM fraud_alerts a
+         WHERE a.callsign != '' AND date(a.created_at) >= date('now', '-' || ? || ' days')
+         GROUP BY a.callsign
+         ORDER BY total_score DESC LIMIT 200`,
+      )
+      .all(days, days, days);
+    return { items };
+  },
+
+  '/api/driver-violations': (q) => {
+    const callsign = q.get('callsign') ?? '';
+    if (!callsign) return { items: [] };
+    const items = db
+      .prepare(
+        `SELECT a.id, a.order_id, a.fraud_type, a.fraud_score, a.details, a.created_at,
+                a.action_taken, a.action_by, a.action_at,
+                o.distance_km, o.duration_sec, o.amount, o.region, o.status, o.cancel_kind,
+                o.date, o.time
+         FROM fraud_alerts a LEFT JOIN orders o ON o.order_id = a.order_id
+         WHERE a.callsign = ?
+         ORDER BY a.created_at DESC LIMIT 200`,
+      )
+      .all(callsign);
+    return { items };
+  },
+
   '/api/sites': () => {
     const items = db
       .prepare(
@@ -1267,6 +1311,99 @@ const server = createServer(async (req, res) => {
     ).run(String(id));
     send(res, 200, { ok: true });
     return;
+  }
+
+  // Site-block: saytda haydovchini bloklash (lock-driver API'si orqali)
+  if (req.method === 'POST' && path === '/api/site-block') {
+    try {
+      const chunks: Buffer[] = [];
+      await new Promise<void>((resolve, reject) => {
+        req.on('data', (c) => chunks.push(c as Buffer));
+        req.on('end', () => resolve());
+        req.on('error', reject);
+      });
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf-8') || '{}');
+      const v = verifyToken(getAuthFromReq(req));
+      const callsign = (body.callsign ?? '').toString().trim();
+      const reason = (body.reason ?? '').toString().trim() || 'Fraud detection';
+      const kind = (body.kind ?? 'moderation').toString();
+      const due = body.due ?? null;
+      if (!callsign) {
+        send(res, 400, { ok: false, error: 'callsign kerak' });
+        return;
+      }
+      const driver = db
+        .prepare(`SELECT driver_id, office_id, first_name, last_name FROM drivers WHERE callsign = ? LIMIT 1`)
+        .get(callsign) as { driver_id: string; office_id: string; first_name: string; last_name: string } | undefined;
+      if (!driver) {
+        send(res, 404, { ok: false, error: 'Haydovchi DB da topilmadi — avval npm run sync qiling' });
+        return;
+      }
+      db.prepare(
+        `INSERT INTO audit_log (action, target_type, target_id, actor, details)
+         VALUES ('site_block_request', 'driver', ?, ?, ?)`,
+      ).run(callsign, v.username ?? 'web', `${kind} | ${reason} | due=${due}`);
+
+      // cli-block-driver.ts skriptini ishga tushiramiz (alohida Playwright session)
+      const isWin = process.platform === 'win32';
+      const cmd = isWin ? 'npx.cmd' : 'npx';
+      const args = ['tsx', isWin ? '"src/cli-block-driver.ts"' : 'src/cli-block-driver.ts',
+        driver.driver_id, String(driver.office_id), kind, reason, due ? '7' : '0'];
+
+      const blockProc = spawn(cmd, args, {
+        cwd: process.cwd(),
+        env: { ...process.env, BROWSER_HEADLESS: 'true' },
+        stdio: ['ignore', 'pipe', 'pipe'],
+        shell: isWin,
+      });
+      let stdout = '';
+      let stderr = '';
+      blockProc.stdout?.on('data', (b: Buffer) => { stdout += b.toString(); });
+      blockProc.stderr?.on('data', (b: Buffer) => { stderr += b.toString(); });
+      const exitCode = await new Promise<number>((resolve) => {
+        blockProc.on('exit', (code) => resolve(code ?? -1));
+        setTimeout(() => { try { blockProc.kill(); } catch {} resolve(-2); }, 60_000);
+      });
+
+      // Natija JSON satrini topish (oxirgi {"ok": ...})
+      const jsonMatch = stdout.match(/\{[^\n]*"ok"[^\n]*\}\s*$/m);
+      let result: { ok: boolean; error?: string } = { ok: false, error: 'Javob topilmadi' };
+      if (jsonMatch) {
+        try { result = JSON.parse(jsonMatch[0]); } catch { /* keep default */ }
+      }
+
+      if (result.ok) {
+        // DB'da blok qilingani yozamiz
+        db.prepare(
+          `INSERT OR REPLACE INTO driver_blocks (callsign, driver_name, reason, total_score, alert_count, applied)
+           VALUES (?, ?, ?, 0, 0, 1)`,
+        ).run(callsign, `${driver.last_name} ${driver.first_name}`, `MANUAL: ${reason}`);
+        db.prepare(
+          `INSERT INTO audit_log (action, target_type, target_id, actor, details)
+           VALUES ('site_block_done', 'driver', ?, ?, ?)`,
+        ).run(callsign, v.username ?? 'web', `kind=${kind} reason=${reason}`);
+      } else {
+        db.prepare(
+          `INSERT INTO audit_log (action, target_type, target_id, actor, details)
+           VALUES ('site_block_failed', 'driver', ?, ?, ?)`,
+        ).run(callsign, v.username ?? 'web', `error=${result.error ?? 'noma\'lum'} stderr=${stderr.slice(0, 200)}`);
+      }
+
+      send(res, result.ok ? 200 : 500, {
+        ok: result.ok,
+        error: result.error,
+        driver: `${driver.last_name} ${driver.first_name}`,
+        callsign,
+        kind,
+        reason,
+        exitCode,
+        stdout: stdout.slice(-500),
+      });
+      return;
+    } catch (err) {
+      send(res, 500, { ok: false, error: (err as Error).message });
+      return;
+    }
   }
 
   if (req.method === 'POST' && path === '/api/alert/action') {

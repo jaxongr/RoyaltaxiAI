@@ -14,6 +14,7 @@ import {
   AuditOutlined,
   UserOutlined,
   GlobalOutlined,
+  ExclamationCircleOutlined,
 } from '@ant-design/icons';
 import { useNavigate, useLocation, Outlet } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
@@ -29,6 +30,7 @@ const items = [
   { key: '/drivers-full', icon: <UserOutlined />, label: 'Haydovchilar (to\'liq)' },
   { key: '/clients', icon: <TeamOutlined />, label: 'Mijozlar' },
   { key: '/alerts', icon: <WarningOutlined />, label: 'Ogohlantirishlar' },
+  { key: '/violators', icon: <ExclamationCircleOutlined />, label: 'Qoida buzarlar' },
   { key: '/blocks', icon: <StopOutlined />, label: 'Bloklar' },
   { key: '/blacklist', icon: <PhoneOutlined />, label: 'Qora ro\'yxat' },
   { key: '/orders', icon: <UnorderedListOutlined />, label: 'Zakazlar' },

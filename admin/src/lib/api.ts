@@ -140,6 +140,22 @@ export interface BlacklistMirrorRow {
   scraped_at: string;
 }
 
+export interface ViolatorRow {
+  callsign: string;
+  driver_name: string;
+  region: string | null;
+  alert_count: number;
+  total_score: number;
+  max_score: number;
+  orders_count: number;
+  cancelled_count: number;
+  fraud_types: string;
+  our_blocked: number | null;
+  site_locked: string | null;
+  driver_id: string | null;
+  office_id: string | null;
+}
+
 export interface AuditRow {
   id: number;
   action: string;
