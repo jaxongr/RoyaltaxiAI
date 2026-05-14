@@ -71,6 +71,11 @@ export interface AlertRow {
   duration_sec: number | null;
   amount: number | null;
   region: string | null;
+  status?: string;
+  action_taken?: string | null;
+  action_by?: string | null;
+  action_at?: string | null;
+  action_note?: string | null;
 }
 
 export interface BlockRow {

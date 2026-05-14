@@ -83,6 +83,10 @@ INSERT OR IGNORE INTO monitor_state (id) VALUES (1);
 `;
 
 const MIGRATIONS = [
+  "ALTER TABLE fraud_alerts ADD COLUMN action_taken TEXT",
+  "ALTER TABLE fraud_alerts ADD COLUMN action_by TEXT",
+  "ALTER TABLE fraud_alerts ADD COLUMN action_at TEXT",
+  "ALTER TABLE fraud_alerts ADD COLUMN action_note TEXT",
   "ALTER TABLE orders ADD COLUMN is_driver_crook INTEGER DEFAULT 0",
   "ALTER TABLE orders ADD COLUMN submission_time TEXT",
   "ALTER TABLE orders ADD COLUMN finish_time TEXT",

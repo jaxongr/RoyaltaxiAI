@@ -76,7 +76,54 @@ function isWhitelisted(db: Database.Database, callsign: string): boolean {
   return row?.whitelisted === 1;
 }
 
+/**
+ * Bekor qilingan zakazlar uchun maxsus baholash
+ */
+function scoreCancelledOrder(db: Database.Database, o: OrderRow): RuleResult {
+  const reasons: string[] = [];
+  let score = 0;
+  let primary = '';
+
+  // "По вине водителя" — haydovchi aybi bilan bekor (eng kuchli signal)
+  if (o.cancel_kind === 'По вине водителя') {
+    score += 80;
+    reasons.push('Sayt rasmiy: "Haydovchi aybi bilan bekor"');
+    primary = 'HAYDOVCHI_AYBI';
+  }
+
+  // "Клиент уже уехал" — haydovchi kechikkan
+  if (o.cancel_kind === 'Клиент уже уехал') {
+    score += 30;
+    reasons.push('Mijoz allaqachon ketgan (haydovchi kechikkan)');
+    primary = primary || 'KECHIKKAN';
+  }
+
+  // Haydovchining bugungi bekorlash holati
+  if (score > 0 && o.callsign && o.date) {
+    const dailyCancel = db
+      .prepare(
+        `SELECT COUNT(*) as c FROM orders
+         WHERE callsign = ? AND date = ?
+           AND status = 'order_cancelled'
+           AND cancel_kind IN ('По вине водителя', 'Клиент уже уехал', 'Автоматически')`,
+      )
+      .get(o.callsign, o.date) as { c: number };
+    if (dailyCancel.c >= 5) {
+      score += 30;
+      reasons.push(`Bugun ${dailyCancel.c} ta shubhali bekor qilish`);
+      primary = primary || 'KO_P_BEKOR_QILUVCHI';
+    }
+  }
+
+  return { score, reasons, primaryType: primary };
+}
+
 export function scoreOrder(db: Database.Database, o: OrderRow): RuleResult {
+  // Bekor qilingan zakaz — alohida qoidalar
+  if (o.status === 'order_cancelled') {
+    return scoreCancelledOrder(db, o);
+  }
+
   const reasons: string[] = [];
   let score = 0;
   let primary = '';

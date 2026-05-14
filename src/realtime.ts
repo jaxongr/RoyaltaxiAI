@@ -169,16 +169,21 @@ async function tick(
   }
   updateMonitorState(db, { tickIncrement: true });
 
-  // Faqat completed=true va DB'da yo'q bo'lganlarni tahlil qilamiz
+  // Yangi zakazlarni (HAM finish, HAM bekor) tahlil qilamiz
   const haveStmt = db.prepare('SELECT 1 FROM orders WHERE order_id = ?');
-  const fresh = items.filter((it) => it.completed === true && !haveStmt.get(it.orderId));
+  const fresh = items.filter((it) => !haveStmt.get(it.orderId));
 
   if (fresh.length === 0) {
-    logger.info({ scanned: items.length }, 'Yangi finish zakaz yo\'q');
+    logger.info({ scanned: items.length }, 'Yangi zakaz yo\'q');
     return;
   }
 
-  logger.info({ scanned: items.length, fresh: fresh.length }, 'Yangi finish zakazlarni tahlil qilamiz');
+  const freshFinish = fresh.filter((it) => it.completed === true).length;
+  const freshCancel = fresh.length - freshFinish;
+  logger.info(
+    { scanned: items.length, fresh: fresh.length, finish: freshFinish, cancelled: freshCancel },
+    'Yangi zakazlarni tahlil qilamiz',
+  );
 
   // Parallel details
   const details = await mapLimit(fresh, concurrency, (it) =>

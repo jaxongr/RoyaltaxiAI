@@ -669,7 +669,8 @@ const ROUTES: Record<string, (q: URLSearchParams) => unknown> = {
     }
     const items = db.prepare(`
       SELECT a.id, a.order_id, a.callsign, a.driver_name, a.fraud_score, a.details, a.created_at,
-             o.distance_km, o.duration_sec, o.amount, o.region
+             a.action_taken, a.action_by, a.action_at, a.action_note,
+             o.distance_km, o.duration_sec, o.amount, o.region, o.status
       FROM fraud_alerts a LEFT JOIN orders o ON o.order_id = a.order_id
       WHERE ${where}
       ORDER BY a.created_at DESC LIMIT @lim
@@ -1266,6 +1267,37 @@ const server = createServer(async (req, res) => {
     ).run(String(id));
     send(res, 200, { ok: true });
     return;
+  }
+
+  if (req.method === 'POST' && path === '/api/alert/action') {
+    try {
+      const chunks: Buffer[] = [];
+      await new Promise<void>((resolve, reject) => {
+        req.on('data', (c) => chunks.push(c as Buffer));
+        req.on('end', () => resolve());
+        req.on('error', reject);
+      });
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf-8') || '{}');
+      const v = verifyToken(getAuthFromReq(req));
+      const id = parseInt(body.alertId ?? '0', 10);
+      if (!id || !body.action) {
+        send(res, 400, { ok: false, error: 'alertId va action kerak' });
+        return;
+      }
+      db.prepare(
+        `UPDATE fraud_alerts SET action_taken = ?, action_by = ?, action_at = CURRENT_TIMESTAMP, action_note = ?
+         WHERE id = ?`,
+      ).run(body.action, v.username ?? 'web', body.note ?? '', id);
+      db.prepare(
+        `INSERT INTO audit_log (action, target_type, target_id, actor, details)
+         VALUES ('alert_action', 'alert', ?, ?, ?)`,
+      ).run(String(id), v.username ?? 'web', `${body.action}: ${body.note ?? ''}`);
+      send(res, 200, { ok: true });
+      return;
+    } catch (err) {
+      send(res, 500, { ok: false, error: (err as Error).message });
+      return;
+    }
   }
 
   if (req.method === 'POST' && (path === '/api/false-positive' || path === '/api/whitelist' || path === '/api/audit')) {
