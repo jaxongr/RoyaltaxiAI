@@ -7,7 +7,7 @@
  */
 import { createBrowserSession, closeBrowserSession, humanPause } from './scraper/browser.js';
 import { login } from './scraper/auth.js';
-import { lockDriver, getDrivers, getDriverDetails } from './scraper/drivers.js';
+import { lockDriver, getDrivers, getDriverDetails, getFleets } from './scraper/drivers.js';
 import { config } from './common/config.js';
 import { logger } from './common/logger.js';
 
@@ -50,34 +50,26 @@ try {
     process.exit(1);
   }
   const driver = items[0]!;
-  const driverId = driver.id;
+  const driverUuid = driver.id;
 
-  // get-drivers javobida officeId/fleetId yo'q, get-fleets'dan olamiz
-  let officeId: number = parseInt(String(driver.officeId ?? ''), 10) || 0;
-  let fleetId: number = parseInt(String(driver.fleetId ?? ''), 10) || 0;
+  // 2) Fleet va office'ni topish
+  let officeId = 239000000000004; // Qashqadaryo Royal default
+  let fleetId = 0;
+  const fleetName = driver.groupNames?.fleetName ?? '';
+  const fleetsResp = await getFleets(session.page);
+  const match = fleetsResp.fleets.find((f) => f.name === fleetName);
+  if (match) fleetId = match.fleetId;
+  logger.info({ fleetName, fleetId, officeId, driverUuid }, 'Fleet topildi');
 
-  if (!officeId || !fleetId) {
-    // Avtokolonna ro'yxatidan haydovchining fleetName ga mos keluvchini topish
-    const fleetName = driver.groupNames?.fleetName ?? '';
-    const { getFleets } = await import('./scraper/drivers.js');
-    const fleetsResp = await getFleets(session.page);
-    const match = fleetsResp.fleets.find((f) => f.name === fleetName);
-    if (match) {
-      fleetId = match.fleetId;
-      // officeId default: Qashqadaryo Royal = 239000000000004
-      officeId = 239000000000004;
-    }
-    logger.info({ fleetName, fleetId, officeId }, 'Fleet topildi');
-  }
-
-  if (!officeId || !fleetId) {
-    console.log(JSON.stringify({
-      ok: false,
-      error: `officeId yoki fleetId topilmadi (driver ${callsign})`,
-      driver,
-    }));
+  if (!fleetId) {
+    console.log(JSON.stringify({ ok: false, error: `Fleet topilmadi: ${fleetName}` }));
     process.exit(1);
   }
+
+  // 3) Get details — bu yerdan haqiqiy driverId (15-digit numerical) keladi
+  const details = await getDriverDetails(session.page, driverUuid, fleetId, officeId);
+  const driverId = details.driverId;
+  logger.info({ driverId, fromUuid: driverUuid }, 'Numerical driverId olindi');
 
   logger.info({ driverId, officeId, kind, comment, due }, 'Bloklash so\'rovi yuborilmoqda');
 
