@@ -90,20 +90,30 @@ export async function getLockKinds(page: Page): Promise<{ kinds: LockKind[] }> {
 
 /**
  * Haydovchini bloklash. Royaltaxi panelidagi "Блок" tugmasi qiladigan ish.
- * @param due - bloklash muddati. null = abadiy. ISO date string = shu vaqtga qadar.
- * @param kind - bloklash sababi (lock kind id, masalan "moderation")
+ * @param due - bloklash muddati. null + isBlockIndefinite=true = abadiy.
+ * @param kind - bloklash sababi (lock kind id, masalan "moderation", "manual")
  * @param comment - izoh (sayt admin'ga ko'rinadi)
  */
 export async function lockDriver(
   page: Page,
-  args: { officeId: string | number; driverId: string; kind: string; comment: string; due?: string | null },
+  args: {
+    officeId: string | number;
+    driverId: string;
+    kind: string;
+    comment: string;
+    due?: string | null;
+  },
 ): Promise<unknown> {
+  // officeId number bo'lishi kerak (sayt rasmiy formati)
+  const officeId = typeof args.officeId === 'string' ? parseInt(args.officeId, 10) : args.officeId;
+  const isBlockIndefinite = args.due == null;
   return apiPost(page, '/management/fleet/drivers/lock-driver', {
-    officeId: args.officeId,
+    officeId,
     driverId: args.driverId,
     kind: args.kind,
     comment: args.comment,
     due: args.due ?? null,
+    isBlockIndefinite,
   });
 }
 
