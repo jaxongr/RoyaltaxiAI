@@ -402,8 +402,8 @@ async function startupBackfill(
         if (res === 'inserted') inserted++;
         else skipped++;
 
-        // Fraud baholash — backfill paytida ham
-        if (row.status === 'finish') {
+        // Fraud baholash — backfill paytida ham (finish va bekor zakazlar uchun)
+        if (row.status === 'finish' || row.status === 'order_cancelled') {
           const result = scoreOrder(db, row);
           if (result.score >= FRAUD_THRESHOLDS.ALERT) {
             insertAlert(db, {
