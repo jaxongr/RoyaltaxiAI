@@ -91,8 +91,9 @@ if (doScore) {
     .prepare(
       `SELECT order_id, callsign, date, time, region, service, tariff, address,
               driver_name, car, client_phone, driver_phones, amount, distance_km,
-              status, raw_text, is_driver_crook, submission_time, finish_time, duration_sec
-       FROM orders WHERE status = 'finish'`,
+              status, raw_text, is_driver_crook, submission_time, finish_time, duration_sec,
+              source, cancel_kind, cancel_comment
+       FROM orders WHERE status IN ('finish', 'order_cancelled')`,
     )
     .all() as OrderRow[];
 
