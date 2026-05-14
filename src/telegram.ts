@@ -131,6 +131,45 @@ export async function sendStartup(info: { interval: number; mode: string }): Pro
   return sendTelegram(msg);
 }
 
+export async function sendPeriodicReport(report: {
+  windowLabel: string;     // "Oxirgi 1 soat", "Oxirgi 30 daqiqa"
+  newOrders: number;
+  alerts: number;
+  blocks: number;
+  topDriver?: string;
+}): Promise<boolean> {
+  const lines = [
+    `📊 <b>${report.windowLabel}</b>`,
+    '',
+    `📦 Yangi zakaz: <b>${report.newOrders}</b>`,
+    `⚠️ Ogohlantirish: <b>${report.alerts}</b>`,
+    `🚨 Blok tavsiya: <b>${report.blocks}</b>`,
+  ];
+  if (report.topDriver) lines.push('', `🏆 Eng faol: ${report.topDriver}`);
+  return sendTelegram(lines.join('\n'));
+}
+
+export async function sendNoOrdersAlert(minutes: number): Promise<boolean> {
+  const msg = [
+    `🟡 <b>SAYT MUAMMOSI?</b>`,
+    '',
+    `Oxirgi <b>${minutes} daqiqa</b> davomida yangi zakaz tushmadi.`,
+    '',
+    'Sayt buzilgan bo\'lishi mumkin yoki internet uzilgan.',
+    'Monitor avtomatik qayta urinmoqda.',
+  ].join('\n');
+  return sendTelegram(msg);
+}
+
+export async function sendSiteRestored(downMinutes: number): Promise<boolean> {
+  const msg = [
+    `🟢 <b>SAYT QAYTDI</b>`,
+    '',
+    `Sayt ${downMinutes} daqiqa yopiq edi. Endi qayta ulandik va davom etamiz.`,
+  ].join('\n');
+  return sendTelegram(msg);
+}
+
 export async function sendHeartbeat(stats: {
   uptimeMin: number;
   ticks: number;

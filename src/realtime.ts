@@ -33,10 +33,23 @@ import {
   sendAlert,
   sendStartup,
   sendHeartbeat,
+  sendPeriodicReport,
+  sendNoOrdersAlert,
+  sendSiteRestored,
   startCommandLoop,
   isTelegramConfigured,
 } from './telegram.js';
 import type Database from 'better-sqlite3';
+
+interface MonitorStats {
+  startedAt: number;
+  ticks: number;
+  ordersProcessed: number;
+  lastError: string | undefined;
+  lastNewFinishAt: number;
+  consecutiveEmptyTicks: number;
+  consecutiveSiteErrors: number;
+}
 
 function parseArgs(): {
   interval: number;
@@ -108,7 +121,7 @@ async function tick(
   db: Database.Database,
   lookbackMin: number,
   concurrency: number,
-  stats?: { ticks: number; ordersProcessed: number },
+  stats?: MonitorStats,
 ): Promise<void> {
   const now = new Date();
   const start = new Date(now.getTime() - lookbackMin * 60 * 1000);
@@ -271,6 +284,13 @@ async function tick(
   if (stats) {
     stats.ticks++;
     stats.ordersProcessed += fresh.length;
+    if (fresh.length > 0) {
+      stats.lastNewFinishAt = Date.now();
+      stats.consecutiveEmptyTicks = 0;
+    } else {
+      stats.consecutiveEmptyTicks++;
+    }
+    stats.consecutiveSiteErrors = 0; // muvaffaqiyatli tick = sayt ishlaydi
   }
 }
 
@@ -369,13 +389,6 @@ async function startupBackfill(
   logger.info({ inserted, skipped, totalSec }, '✅ STARTUP BACKFILL tugadi');
 }
 
-interface MonitorStats {
-  startedAt: number;
-  ticks: number;
-  ordersProcessed: number;
-  lastError: string | undefined;
-}
-
 function buildStatsHandler(db: Database.Database, s: MonitorStats): () => Promise<string> {
   return async () => {
     const today = new Date().toISOString().slice(0, 10);
@@ -468,6 +481,9 @@ async function main(): Promise<void> {
     ticks: 0,
     ordersProcessed: 0,
     lastError: undefined,
+    lastNewFinishAt: Date.now(),
+    consecutiveEmptyTicks: 0,
+    consecutiveSiteErrors: 0,
   };
 
   void sendStartup({ interval, mode: 'polling-fast' });
@@ -487,6 +503,59 @@ async function main(): Promise<void> {
         '/help — yordam',
       ].join('\n'),
   });
+
+  // Davriy hisobot — har 60 daqiqada "oxirgi 1 soat" xulosasi
+  let lastReportAt = Date.now();
+  setInterval(
+    () => {
+      const now = Date.now();
+      const sinceMin = Math.round((now - lastReportAt) / 60000);
+      lastReportAt = now;
+      const fromIso = new Date(now - sinceMin * 60 * 1000).toISOString();
+      const newOrders = (
+        db.prepare(`SELECT COUNT(*) as c FROM orders WHERE datetime(scraped_at) >= ?`).get(fromIso) as { c: number }
+      ).c;
+      const alerts = (
+        db.prepare(`SELECT COUNT(*) as c FROM fraud_alerts WHERE datetime(created_at) >= ?`).get(fromIso) as { c: number }
+      ).c;
+      const blocks = (
+        db.prepare(`SELECT COUNT(*) as c FROM driver_blocks WHERE datetime(blocked_at) >= ?`).get(fromIso) as { c: number }
+      ).c;
+      const topRow = db.prepare(
+        `SELECT callsign, driver_name, COUNT(*) as c FROM orders
+         WHERE datetime(scraped_at) >= ? AND callsign != ''
+         GROUP BY callsign ORDER BY c DESC LIMIT 1`,
+      ).get(fromIso) as { callsign: string; driver_name: string; c: number } | undefined;
+      void sendPeriodicReport({
+        windowLabel: `Oxirgi ${sinceMin} daqiqa`,
+        newOrders,
+        alerts,
+        blocks,
+        topDriver: topRow ? `${topRow.driver_name} (${topRow.callsign}) — ${topRow.c} zakaz` : undefined,
+      });
+    },
+    60 * 60 * 1000, // har 60 daqiqa
+  );
+
+  // "Yangi zakaz yo'q" alarm — har 5 daqiqada tekshiradi
+  let noOrdersAlertSent = false;
+  let lastNoOrderAt = 0;
+  setInterval(
+    () => {
+      const minSince = Math.round((Date.now() - stats.lastNewFinishAt) / 60000);
+      if (minSince >= 15 && !noOrdersAlertSent) {
+        void sendNoOrdersAlert(minSince);
+        noOrdersAlertSent = true;
+        lastNoOrderAt = Date.now();
+      } else if (minSince < 5 && noOrdersAlertSent) {
+        // Sayt qaytdi
+        const downMin = Math.round((Date.now() - lastNoOrderAt) / 60000);
+        void sendSiteRestored(downMin);
+        noOrdersAlertSent = false;
+      }
+    },
+    5 * 60 * 1000,
+  );
 
   // Heartbeat — har N daqiqada
   setInterval(
@@ -544,13 +613,21 @@ async function main(): Promise<void> {
           await tick(session, db, lookback, concurrency, stats);
           consecutiveErrors = 0;
           stats.lastError = undefined;
+          stats.consecutiveSiteErrors = 0;
         } catch (err) {
           consecutiveErrors++;
+          stats.consecutiveSiteErrors++;
           stats.lastError = (err as Error).message;
           logger.error(
-            { err: stats.lastError, consecutiveErrors },
+            { err: stats.lastError, consecutiveErrors, siteErrors: stats.consecutiveSiteErrors },
             'Tick xato',
           );
+          // Sayt 10 marta ketma-ket xato bersa, 1 daqiqa kutib qayta urinamiz
+          if (stats.consecutiveSiteErrors >= 10) {
+            logger.warn('10 ta sayt xato — 60 sek kutamiz (sayt buzilgan bo\'lishi mumkin)');
+            await new Promise((r) => setTimeout(r, 60_000));
+            stats.consecutiveSiteErrors = 0;
+          }
           if (consecutiveErrors >= 5) {
             logger.error('5 ta ketma-ket xato — sessiyani qayta tiklaymiz');
             throw new Error('session-reboot');
