@@ -258,7 +258,7 @@ async function ensureAllSubdivisionsChecked(session: BrowserSession): Promise<vo
               checkedCount = uncheckedBefore - uncheckedAfter;
               checkedNames.push('Выбрать все (qisman: ' + checkedCount + ' ON, ' + uncheckedAfter + ' qolgan)');
             } else {
-              checkedNames.push('Выбрать все bosildi lekin holat o\'zgarmadi (uncheckedAfter=' + uncheckedAfter + ')');
+              checkedNames.push("Выбрать все bosildi lekin holat o'zgarmadi (uncheckedAfter=" + uncheckedAfter + ")");
             }
             alreadyChecked = document.querySelectorAll('.checkbox_checked').length;
           } else {
