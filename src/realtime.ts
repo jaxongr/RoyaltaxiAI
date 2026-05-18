@@ -488,7 +488,7 @@ async function tick(
     const result = scoreOrder(db, row);
     if (result.score < FRAUD_THRESHOLDS.ALERT) continue;
 
-    insertAlert(db, {
+    const insertResult = insertAlert(db, {
       order_id: row.order_id,
       callsign: row.callsign,
       driver_name: row.driver_name,
@@ -496,6 +496,11 @@ async function tick(
       fraud_score: result.score,
       details: result.reasons.join(' | '),
     });
+    if (insertResult === 'duplicate') {
+      // Bu zakaz boshqa monitor process yoki backfill tomonidan
+      // allaqachon alert qilingan. Qaytadan Telegram yubormaymiz.
+      continue;
+    }
     markOrderFraud(db, row.order_id, result.score, result.reasons);
     alertsAdded++;
 
@@ -722,7 +727,7 @@ async function startupBackfill(
         if (row.status === 'finish' || row.status === 'order_cancelled') {
           const result = scoreOrder(db, row);
           if (result.score >= FRAUD_THRESHOLDS.ALERT) {
-            insertAlert(db, {
+            const insertRes = insertAlert(db, {
               order_id: row.order_id,
               callsign: row.callsign,
               driver_name: row.driver_name,
@@ -730,6 +735,10 @@ async function startupBackfill(
               fraud_score: result.score,
               details: result.reasons.join(' | '),
             });
+            if (insertRes === 'duplicate') {
+              // Duplicate — sendAlert chaqirilmaydi (5x spam'ni oldini olish)
+              continue;
+            }
             markOrderFraud(db, row.order_id, result.score, result.reasons);
 
             // Telegram alert — faqat oxirgi 2 soat ichidagi zakazlar uchun

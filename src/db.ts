@@ -128,6 +128,8 @@ const MIGRATIONS = [
   "ALTER TABLE orders ADD COLUMN site_id INTEGER",
   "ALTER TABLE fraud_alerts ADD COLUMN site_id INTEGER",
   "ALTER TABLE site_credentials ADD COLUMN use_proxy INTEGER DEFAULT 1",
+  // Duplicate alert oldini olish — bir order_id uchun faqat bitta fraud_alert
+  "CREATE UNIQUE INDEX IF NOT EXISTS idx_fraud_alerts_order_unique ON fraud_alerts(order_id)",
   // Performance indexlar — 500K+ order uchun kerak
   "CREATE INDEX IF NOT EXISTS idx_orders_date_region ON orders(date, region)",
   "CREATE INDEX IF NOT EXISTS idx_orders_date_callsign ON orders(date, callsign)",
@@ -315,12 +317,20 @@ export interface FraudAlert {
   details: string;
 }
 
-export function insertAlert(db: Database.Database, a: FraudAlert): void {
+/**
+ * Returns 'inserted' for new alerts, 'duplicate' if order_id already alerted.
+ * Duplicate'lar uchun Telegram yuborilmaydi (bitta zakaz uchun 5x duplicate
+ * xabar muammosini hal qiladi).
+ */
+export function insertAlert(db: Database.Database, a: FraudAlert): 'inserted' | 'duplicate' {
   const siteId = process.env.SITE_ID ? parseInt(process.env.SITE_ID, 10) : null;
-  db.prepare(
-    `INSERT INTO fraud_alerts (order_id, callsign, driver_name, fraud_type, fraud_score, details, site_id)
+  // INSERT OR IGNORE — agar shu order_id uchun allaqachon alert bo'lsa, skip
+  const stmt = db.prepare(
+    `INSERT OR IGNORE INTO fraud_alerts (order_id, callsign, driver_name, fraud_type, fraud_score, details, site_id)
      VALUES (@order_id, @callsign, @driver_name, @fraud_type, @fraud_score, @details, @site_id)`,
-  ).run({ ...a, site_id: siteId });
+  );
+  const result = stmt.run({ ...a, site_id: siteId });
+  return result.changes > 0 ? 'inserted' : 'duplicate';
 }
 
 export function markOrderFraud(
