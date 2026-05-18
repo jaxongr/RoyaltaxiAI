@@ -224,7 +224,70 @@ export async function getAccessibleOffices(page: Page): Promise<OfficesAndFleets
       // shu endpoint javob bermadi — keyingisiga o'tamiz
     }
   }
+
+  // Fallback: DOM/HTML'dan officeId'larni chiqarib olamiz.
+  // Sayt'ning Подразделение filteri archive sahifa'da render bo'ladi,
+  // officeId'lar HTML/script'da JSON sifatida joylashgan bo'lishi mumkin.
+  try {
+    const fromDom = await extractOfficesFromDom(page);
+    if (fromDom.offices.length > 0) return fromDom;
+  } catch { /* ignore */ }
+
   return { offices: [] };
+}
+
+async function extractOfficesFromDom(page: Page): Promise<OfficesAndFleetsResponse> {
+  const result = await page.evaluate(() => {
+    const found = new Map<string, string>(); // officeId → name
+
+    // 1) Har qanday select option ichida officeId-ga o'xshash value
+    document.querySelectorAll('option').forEach((opt) => {
+      const v = opt.getAttribute('value') ?? '';
+      const t = (opt.textContent ?? '').trim();
+      if (/^\d{15,20}$/.test(v) && t && t.length > 1) {
+        found.set(v, t);
+      }
+    });
+
+    // 2) data-* atributlari
+    document.querySelectorAll('[data-office-id], [data-officeid], [data-id]').forEach((el) => {
+      const id =
+        el.getAttribute('data-office-id') ??
+        el.getAttribute('data-officeid') ??
+        el.getAttribute('data-id') ??
+        '';
+      const t = (el.textContent ?? '').trim();
+      if (/^\d{15,20}$/.test(id) && t && t.length > 1 && t.length < 100) {
+        // birinchi qator nomi
+        const name = t.split('\n')[0]!.trim();
+        if (name) found.set(id, name);
+      }
+    });
+
+    // 3) HTML/script ichidagi JSON pattern
+    const html = document.documentElement.innerHTML;
+    // {"officeId":239000...,"name":"..."}
+    const re1 = /"officeId"\s*:\s*(\d{15,20})\s*,\s*"name"\s*:\s*"([^"]+)"/g;
+    let m: RegExpExecArray | null;
+    while ((m = re1.exec(html)) !== null) {
+      found.set(m[1]!, m[2]!);
+    }
+    // {"id":239000...,"name":"..."} (umumiyroq)
+    const re2 = /"id"\s*:\s*(\d{15,20})\s*,\s*"name"\s*:\s*"([^"]+)"/g;
+    while ((m = re2.exec(html)) !== null) {
+      // faqat hali yo'q bo'lganlarini qo'shamiz (xato false positivelarni kamaytirish uchun)
+      if (!found.has(m[1]!)) found.set(m[1]!, m[2]!);
+    }
+
+    return Array.from(found.entries()).map(([id, name]) => ({ officeId: id, name }));
+  });
+
+  const offices: OfficeWithFleets[] = result.map((r) => ({
+    officeId: Number(r.officeId),
+    name: r.name,
+    fleets: [],
+  }));
+  return { offices };
 }
 
 export interface GpsPoint {
