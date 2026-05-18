@@ -138,6 +138,9 @@ const MIGRATIONS = [
     name TEXT PRIMARY KEY,
     blocked_at TEXT DEFAULT CURRENT_TIMESTAMP
   )`,
+  // Performance: sekin queries (Violators 7-kun 6s → 17ms, Clients 1.1s → 20ms)
+  "CREATE INDEX IF NOT EXISTS idx_alerts_callsign_created ON fraud_alerts(callsign, created_at)",
+  "CREATE INDEX IF NOT EXISTS idx_orders_callsign_orderid ON orders(callsign, order_id)",
   // Performance indexlar — 500K+ order uchun kerak
   "CREATE INDEX IF NOT EXISTS idx_orders_date_region ON orders(date, region)",
   "CREATE INDEX IF NOT EXISTS idx_orders_date_callsign ON orders(date, callsign)",
@@ -286,6 +289,25 @@ export function openDb(): Database.Database {
       }
     }
   }
+  // ANALYZE — query optimizer'ga statistics beradi. Yangi index'lardan
+  // keyin shart, periodik ham (har 24 soat). Avval mavjudligini tekshiramiz
+  // (catalog stale bo'lsa yomon plan tanlanadi).
+  try {
+    const lastAnalyze = db.prepare(
+      `SELECT (julianday('now') - julianday(MAX(stat))) * 24 as hours_since FROM (
+        SELECT '1970-01-01' as stat WHERE NOT EXISTS (SELECT 1 FROM sqlite_stat1 LIMIT 1)
+        UNION ALL
+        SELECT CURRENT_TIMESTAMP WHERE EXISTS (SELECT 1 FROM sqlite_stat1 LIMIT 1)
+      )`,
+    ).get() as { hours_since: number | null } | undefined;
+    if (!lastAnalyze || (lastAnalyze.hours_since ?? 999) > 23) {
+      db.exec('ANALYZE');
+      log.info('SQLite ANALYZE bajarildi (query optimizer stats yangilandi)');
+    }
+  } catch (err) {
+    log.warn({ err: (err as Error).message }, 'ANALYZE xato');
+  }
+
   // Default admin user — env'dagi TELEGRAM_CHAT_ID
   const envChatId = process.env.TELEGRAM_CHAT_ID;
   if (envChatId) {

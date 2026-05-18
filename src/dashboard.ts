@@ -3086,6 +3086,19 @@ server.listen(PORT, () => {
     }
   }, 30 * 60 * 1000);
 
+  // 🧹 AUTO-CLEANUP #2b: ANALYZE — har 24 soat. SQLite optimizer'ga
+  // yangi ma'lumotlar statistikasini beradi. Yangi index ishlatilishi
+  // va katta jadvallar uchun query rejasini yaxshilaydi.
+  setInterval(() => {
+    try {
+      const t0 = Date.now();
+      db.exec('ANALYZE');
+      logger.info({ ms: Date.now() - t0 }, '📊 SQLite ANALYZE bajarildi (24h)');
+    } catch (err) {
+      logger.warn({ err: (err as Error).message }, 'ANALYZE xato');
+    }
+  }, 24 * 60 * 60 * 1000);
+
   // 🧹 AUTO-CLEANUP #3: Stale monitor — agar sayt monitor'i 30 daqiqadan ortiq vaqt ichida
   // tick yangilab turmagan bo'lsa (qotib qolgan), uni majburiy restart qiladi.
   setInterval(() => {
