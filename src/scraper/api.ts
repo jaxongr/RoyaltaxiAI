@@ -410,8 +410,12 @@ export function toDbOrder(
     const commaIdx = firstRoute.indexOf(',');
     if (commaIdx > 0) {
       const candidate = firstRoute.slice(0, commaIdx).trim();
-      // 2-50 belgi va alfa-numeric (geo nomi)
-      if (candidate.length >= 2 && candidate.length <= 50) {
+      // Tuman/shahar nomi: 2-50 belgi
+      // Quyidagilar tuman emas — ko'cha, mahalla, lokatsiya:
+      const isNotRegion = /ko['ʼ‘]?cha|ko['ʼ‘]?chasi|kucha|куча|mahalla|махалла|tor\s|kichik\s+tuman|кичик\s+туман|массив|massiv|маҳалла|кўча|magazin|магазин|kafe|кафе|bog['ʼ‘]?cha|богча|maktab|мактаб|liсey|литцей|bekat|бекат|больница|болница|больниc|kasalxona|ҳудуд|шифо/i.test(candidate);
+      // Faqat raqamlar bo'lsa ham emas (masalan: "5-uy")
+      const isJustNumber = /^[\d\s.\-,]+$/.test(candidate);
+      if (candidate.length >= 2 && candidate.length <= 50 && !isNotRegion && !isJustNumber) {
         region = candidate;
       }
     }
