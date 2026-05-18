@@ -156,9 +156,25 @@ export function scoreOrder(db: Database.Database, o: OrderRow): RuleResult {
   const dist = o.distance_km;
   const dur = o.duration_sec;
 
+  // MA'LUMOT YETARLI EMAS — distance, duration va amount HAMMASI null bo'lsa,
+  // zakaz hali to'liq scrape qilinmagan (get-order-details javob bermagan/sekin).
+  // Alert spam'iga aylanmasin. Keyingi recalc'da to'liq ma'lumot bilan qayta baholanadi.
+  if (dist === null && dur === null && o.amount === null) {
+    return { score: 0, reasons: [], primaryType: '' };
+  }
+
   // 1) JUDA QISQA MASOFA — eng kuchli signal
-  // 500m + dan ortiq normal hisoblanadi va alert qilinmaydi
-  if (dist !== null && dist < 0.2) {
+  // distance=0 yoki masofa NULL (GPS yo'q) — umuman yurmagan!
+  if (dist === 0 && o.status === 'finish') {
+    score += 110;
+    reasons.push('Masofa = 0 km — umuman yurmagan, fizik imkonsiz');
+    primary = primary || 'YURMAGAN';
+  } else if (dist === null && o.status === 'finish') {
+    // GPS yozilmagan — haydovchi taximeterni yoqmagan
+    score += 75;
+    reasons.push('Masofa yozilmagan (GPS yoqilmagan) — yurganini isbotlay olmaydi');
+    primary = primary || 'GPS_YOQ';
+  } else if (dist !== null && dist < 0.2) {
     score += 100;
     reasons.push(`Masofa juda qisqa: ${Math.round(dist * 1000)} metr (200 m dan kam)`);
     primary = primary || 'SOXTA_QISQA_MASOFA';
@@ -245,6 +261,20 @@ export function scoreOrder(db: Database.Database, o: OrderRow): RuleResult {
     reasons.push('Narx 0 so\'m — pul olmadi, lekin "yakunlandi" bosgan');
     primary = primary || 'NARXSIZ_YAKUN';
   }
+
+  // 9a) ARZON ZAKAZ — narx 1000 so'm dan kam (lekin > 0) va tugagan
+  // Haqiqiy zakaz minimum 3000-5000 so'm. 100-500 so'm — soxta.
+  if (o.amount !== null && o.amount > 0 && o.amount < 1000 && o.status === 'finish') {
+    score += 80;
+    reasons.push(`Narx juda kam: ${o.amount} so'm (haqiqiy zakaz emas — taksometr ham emas)`);
+    primary = primary || 'ARZON_ZAKAZ';
+  } else if (o.amount !== null && o.amount >= 1000 && o.amount < 3000 && o.status === 'finish') {
+    score += 40;
+    reasons.push(`Narx kam: ${o.amount} so'm (minimum tarifdan ham past)`);
+    primary = primary || 'ARZON_ZAKAZ';
+  }
+
+  // (Eski 9b qoida olib tashlandi — endi rule 1 da GPS_YOQ va YURMAGAN bor)
 
   // 10) JUDA QISQA VAQT (<30 sek) + masofa nomalum yoki kichik
   // Bu fizik imkonsiz — 30 sekundda mijozni olib borib bo'lmaydi

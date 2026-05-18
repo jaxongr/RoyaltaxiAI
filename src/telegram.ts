@@ -1,15 +1,107 @@
 /**
  * Telegram bot integratsiyasi — shubhali zakaz, blok tavsiya va statusni yuboradi.
- * Token va chat ID .env'dan keladi. Token yo'q bo'lsa, sukut bilan o'tib ketadi.
+ * Multi-user routing: alert hududiga ko'ra kerakli foydalanuvchilarga yuboradi.
  */
 import { config } from './common/config.js';
 import { childLogger } from './common/logger.js';
+import { openDb } from './db.js';
 
 const log = childLogger('telegram');
 
 const API_BASE = config.TELEGRAM_BOT_TOKEN
   ? `https://api.telegram.org/bot${config.TELEGRAM_BOT_TOKEN}`
   : null;
+
+interface TelegramUser {
+  id: number;
+  chat_id: string;
+  full_name: string | null;
+  role: string;
+  regions: string | null; // JSON array yoki NULL (= hammasi)
+  receive_alerts: number;
+  receive_daily_report: number;
+  receive_no_orders_alert: number;
+  is_active: number;
+}
+
+interface BroadcastFilter {
+  type: 'alert' | 'daily_report' | 'no_orders' | 'all' | 'admin_only';
+  region?: string;
+}
+
+/**
+ * DB'dan kerakli foydalanuvchilarni topib, hammasiga yuboradi.
+ * Filter:
+ *   - type='alert' va region berilsa: faqat shu hudud uchun obuna bo'lganlar (yoki regions=NULL/admin)
+ *   - type='daily_report': barcha receive_daily_report=1
+ *   - type='no_orders': barcha receive_no_orders_alert=1
+ *   - type='all': hammaga (boshqa muhim xabarlar)
+ */
+async function broadcast(text: string, filter: BroadcastFilter): Promise<{ sent: number; failed: number }> {
+  if (!API_BASE) return { sent: 0, failed: 0 };
+  let users: TelegramUser[] = [];
+  try {
+    const db = openDb();
+    users = db
+      .prepare(`SELECT * FROM telegram_users WHERE is_active = 1`)
+      .all() as TelegramUser[];
+  } catch (err) {
+    log.warn({ err: (err as Error).message }, 'DB user ro\'yxati xato');
+    // Fallback — .env chat_id ga yuboramiz
+    if (config.TELEGRAM_CHAT_ID) {
+      users = [{
+        id: 0, chat_id: String(config.TELEGRAM_CHAT_ID), full_name: 'env-fallback', role: 'admin',
+        regions: null, receive_alerts: 1, receive_daily_report: 1, receive_no_orders_alert: 1, is_active: 1,
+      }];
+    }
+  }
+
+  const targets: TelegramUser[] = users.filter((u) => {
+    if (filter.type === 'alert') {
+      if (!u.receive_alerts) return false;
+      // Admin yoki regions=NULL — hammasini oladi
+      if (u.role === 'admin' || !u.regions) return true;
+      try {
+        const userRegions = JSON.parse(u.regions) as string[];
+        if (userRegions.length === 0) return true; // bo'sh array = hammasi
+        if (!filter.region) return false; // alert region yo'q bo'lsa, faqat admin
+        return userRegions.includes(filter.region);
+      } catch {
+        return false;
+      }
+    }
+    if (filter.type === 'daily_report') return !!u.receive_daily_report;
+    if (filter.type === 'no_orders') return !!u.receive_no_orders_alert;
+    if (filter.type === 'admin_only') return u.role === 'admin';
+    return true; // 'all'
+  });
+
+  let sent = 0; let failed = 0;
+  for (const u of targets) {
+    try {
+      const resp = await fetch(`${API_BASE}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: u.chat_id,
+          text,
+          parse_mode: 'HTML',
+          disable_web_page_preview: true,
+        }),
+      });
+      if (resp.ok) sent++;
+      else {
+        failed++;
+        const body = await resp.text();
+        log.warn({ chat_id: u.chat_id, status: resp.status, body: body.slice(0, 200) }, 'Yuborishda xato');
+      }
+    } catch (err) {
+      failed++;
+      log.warn({ chat_id: u.chat_id, err: (err as Error).message }, 'Network xato');
+    }
+  }
+  return { sent, failed };
+}
 
 interface AlertPayload {
   callsign: string;
@@ -94,35 +186,48 @@ function formatAlert(a: AlertPayload): string {
   return lines.join('\n');
 }
 
+/**
+ * Eski API — `all` rejimda hammaga yuboradi.
+ * Mavjud kod (heartbeat, startup va h.k.) buni chaqiradi.
+ */
 export async function sendTelegram(text: string): Promise<boolean> {
-  if (!API_BASE || !config.TELEGRAM_CHAT_ID) {
-    return false;
-  }
+  if (!API_BASE) return false;
+  const r = await broadcast(text, { type: 'all' });
+  return r.sent > 0;
+}
+
+/**
+ * Bitta chat_id ga yuborish (test, registratsiya yoki specific user uchun)
+ */
+export async function sendToChat(chatId: string, text: string): Promise<boolean> {
+  if (!API_BASE) return false;
   try {
     const resp = await fetch(`${API_BASE}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: config.TELEGRAM_CHAT_ID,
-        text,
-        parse_mode: 'HTML',
-        disable_web_page_preview: true,
-      }),
+      body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'HTML', disable_web_page_preview: true }),
     });
-    if (!resp.ok) {
-      const body = await resp.text();
-      log.warn({ status: resp.status, body: body.slice(0, 300) }, 'Telegram yuborilmadi');
-      return false;
-    }
-    return true;
-  } catch (err) {
-    log.warn({ err: (err as Error).message }, 'Telegram xato');
+    return resp.ok;
+  } catch {
     return false;
   }
 }
 
 export async function sendAlert(a: AlertPayload): Promise<boolean> {
-  return sendTelegram(formatAlert(a));
+  // Spam himoyasi — distance, duration va amount HAMMASI noma'lum bo'lsa,
+  // zakazda hech qanday foydali ma'lumot yo'q. Botga bunaqa alert yuborilmasin.
+  if (a.distance === null && a.duration === null && a.amount === null) {
+    log.info(
+      { orderId: a.orderId, callsign: a.callsign },
+      'Alert o\'tkazib yuborildi — ma\'lumot yetarli emas (distance/duration/amount hammasi null)',
+    );
+    return false;
+  }
+  const r = await broadcast(formatAlert(a), { type: 'alert', region: a.region });
+  if (r.sent === 0 && r.failed === 0) {
+    log.info({ region: a.region }, 'Hudud uchun obuna bo\'lgan user yo\'q');
+  }
+  return r.sent > 0;
 }
 
 export async function sendStartup(info: { interval: number; mode: string }): Promise<boolean> {
@@ -135,7 +240,9 @@ export async function sendStartup(info: { interval: number; mode: string }): Pro
     '',
     'Buyruqlar: /stats /top /blocks /help',
   ].join('\n');
-  return sendTelegram(msg);
+  // Faqat admin — texnik xabar
+  const r = await broadcast(msg, { type: 'admin_only' });
+  return r.sent > 0;
 }
 
 export async function sendPeriodicReport(report: {
@@ -153,7 +260,9 @@ export async function sendPeriodicReport(report: {
     `🚨 Blok tavsiya: <b>${report.blocks}</b>`,
   ];
   if (report.topDriver) lines.push('', `🏆 Eng faol: ${report.topDriver}`);
-  return sendTelegram(lines.join('\n'));
+  // Faqat admin — bu texnik hisobot
+  const r = await broadcast(lines.join('\n'), { type: 'admin_only' });
+  return r.sent > 0;
 }
 
 export async function sendNoOrdersAlert(minutes: number): Promise<boolean> {
@@ -165,7 +274,8 @@ export async function sendNoOrdersAlert(minutes: number): Promise<boolean> {
     'Sayt buzilgan bo\'lishi mumkin yoki internet uzilgan.',
     'Monitor avtomatik qayta urinmoqda.',
   ].join('\n');
-  return sendTelegram(msg);
+  const r = await broadcast(msg, { type: 'no_orders' });
+  return r.sent > 0;
 }
 
 export async function sendSiteRestored(downMinutes: number): Promise<boolean> {
@@ -174,7 +284,58 @@ export async function sendSiteRestored(downMinutes: number): Promise<boolean> {
     '',
     `Sayt ${downMinutes} daqiqa yopiq edi. Endi qayta ulandik va davom etamiz.`,
   ].join('\n');
-  return sendTelegram(msg);
+  const r = await broadcast(msg, { type: 'no_orders' });
+  return r.sent > 0;
+}
+
+export interface DailyReportPayload {
+  date: string;
+  orders: number;
+  completed: number;
+  cancelled: number;
+  totalAmount: number;
+  activeDrivers: number;
+  newClients: number;
+  alerts: number;
+  blocks: number;
+  topDriver?: { callsign: string; name: string; orders: number; amount: number };
+  topRegion?: { region: string; orders: number };
+  topFraud?: { callsign: string; name: string; score: number };
+  forecast?: { tomorrowOrders: number; tomorrowDrivers: number; weekday: string };
+}
+
+export async function sendDailyReport(r: DailyReportPayload): Promise<boolean> {
+  const fmt = (n: number): string => n.toLocaleString('ru-RU');
+  const completionPct = r.orders > 0 ? Math.round((r.completed / r.orders) * 100) : 0;
+  const lines = [
+    `📊 <b>KUNLIK HISOBOT — ${r.date}</b>`,
+    '',
+    `📦 Zakazlar: <b>${fmt(r.orders)}</b>`,
+    `✅ Bajarildi: ${fmt(r.completed)} (${completionPct}%)`,
+    `❌ Bekor: ${fmt(r.cancelled)}`,
+    `💰 Jami summa: <b>${fmt(r.totalAmount)} so'm</b>`,
+    `🚕 Aktiv haydovchi: <b>${r.activeDrivers}</b>`,
+    `👤 Yangi mijoz: <b>${r.newClients}</b>`,
+    '',
+    `⚠️ Ogohlantirish: <b>${r.alerts}</b>`,
+    `🚨 Blok tavsiya: <b>${r.blocks}</b>`,
+  ];
+  if (r.topDriver) {
+    lines.push('', `🏆 <b>Eng faol haydovchi:</b>`);
+    lines.push(`   ${r.topDriver.callsign} ${r.topDriver.name}`);
+    lines.push(`   ${fmt(r.topDriver.orders)} zakaz, ${fmt(r.topDriver.amount)} so'm`);
+  }
+  if (r.topRegion) {
+    lines.push('', `📍 Eng faol hudud: <b>${r.topRegion.region}</b> (${fmt(r.topRegion.orders)} zakaz)`);
+  }
+  if (r.topFraud) {
+    lines.push('', `⚠️ Eng shubhali: ${r.topFraud.callsign} ${r.topFraud.name} — ${r.topFraud.score} ball`);
+  }
+  if (r.forecast) {
+    lines.push('', `🔮 <b>Ertaga (${r.forecast.weekday}) bashorat:</b>`);
+    lines.push(`   ~${fmt(r.forecast.tomorrowOrders)} zakaz, ~${r.forecast.tomorrowDrivers} haydovchi`);
+  }
+  return sendTelegram(lines.join('\n'));
 }
 
 export async function sendHeartbeat(stats: {
@@ -195,7 +356,9 @@ export async function sendHeartbeat(stats: {
     `🚨 Bugungi blok tavsiya: ${stats.blocksToday}`,
   ];
   if (stats.lastError) msg.push('', `❌ Oxirgi xato: ${stats.lastError}`);
-  return sendTelegram(msg.join('\n'));
+  // Faqat admin — texnik heartbeat
+  const r = await broadcast(msg.join('\n'), { type: 'admin_only' });
+  return r.sent > 0;
 }
 
 export function isTelegramConfigured(): boolean {
@@ -207,6 +370,56 @@ export function isTelegramConfigured(): boolean {
  * /stats, /top, /blocks, /help
  */
 type CommandHandler = () => Promise<string>;
+
+/**
+ * Yangi user'ni avto-ro'yxatga olish — /start bosilganda.
+ * is_active=0 bilan qo'shadi (admin keyin yoqishi kerak).
+ */
+function autoRegisterUser(chatId: number, firstName: string, lastName: string, username: string): {
+  isNew: boolean; isActive: boolean;
+} {
+  try {
+    const db = openDb();
+    const existing = db
+      .prepare(`SELECT is_active FROM telegram_users WHERE chat_id = ?`)
+      .get(String(chatId)) as { is_active: number } | undefined;
+    if (existing) {
+      return { isNew: false, isActive: !!existing.is_active };
+    }
+    const fullName = `${firstName} ${lastName}`.trim() || username || 'User';
+    db.prepare(
+      `INSERT INTO telegram_users (chat_id, full_name, username, role, regions, receive_alerts, receive_daily_report, receive_no_orders_alert, is_active, note)
+       VALUES (?, ?, ?, 'viewer', NULL, 1, 0, 0, 0, '/start orqali ro\\'yxatga olindi')`,
+    ).run(String(chatId), fullName, username || null);
+    return { isNew: true, isActive: false };
+  } catch (err) {
+    log.warn({ err: (err as Error).message }, 'Auto-register xato');
+    return { isNew: false, isActive: false };
+  }
+}
+
+async function notifyAdminsOfNewUser(chatId: number, name: string, username: string): Promise<void> {
+  const text = [
+    '🆕 <b>Yangi foydalanuvchi ro\'yxatga olindi</b>',
+    '',
+    `👤 Ism: <b>${name}</b>`,
+    username ? `🌐 Username: @${username}` : '',
+    `🆔 Chat ID: <code>${chatId}</code>`,
+    '',
+    '📋 Admin sahifasidan tasdiqlang va hududlarni belgilang:',
+    'Dashboard → Bot foydalanuvchilar → Tahrir → AKTIV qiling',
+  ].filter(Boolean).join('\n');
+  // Faqat admin'larga
+  try {
+    const db = openDb();
+    const admins = db
+      .prepare(`SELECT chat_id FROM telegram_users WHERE role = 'admin' AND is_active = 1`)
+      .all() as Array<{ chat_id: string }>;
+    for (const a of admins) {
+      void sendToChat(a.chat_id, text);
+    }
+  } catch { /* ignore */ }
+}
 
 export async function startCommandLoop(
   handlers: Record<string, CommandHandler>,
@@ -225,6 +438,7 @@ export async function startCommandLoop(
             update_id: number;
             message?: {
               chat: { id: number };
+              from?: { first_name?: string; last_name?: string; username?: string };
               text?: string;
             };
           }>;
@@ -233,22 +447,83 @@ export async function startCommandLoop(
         for (const upd of json.result) {
           offset = Math.max(offset, upd.update_id + 1);
           const text = upd.message?.text?.trim();
-          if (!text || !text.startsWith('/')) continue;
+          const chatId = upd.message?.chat?.id;
+          const from = upd.message?.from ?? {};
+          if (!text || !chatId) continue;
+
+          // /start — avto-ro'yxatga olish
+          if (text.startsWith('/start')) {
+            const result = autoRegisterUser(
+              chatId,
+              from.first_name ?? '',
+              from.last_name ?? '',
+              from.username ?? '',
+            );
+            const name = `${from.first_name ?? ''} ${from.last_name ?? ''}`.trim() || from.username || 'Foydalanuvchi';
+            let reply: string;
+            if (result.isNew) {
+              reply = [
+                `👋 Salom, <b>${name}</b>!`,
+                '',
+                '✅ Siz <b>Royaltaxi AI</b> tizimiga ro\'yxatga olindingiz.',
+                '',
+                '⏳ <b>Hozir admin tasdiqlashi kutilmoqda.</b>',
+                'Admin sizning hududlaringizni belgilab, akkauntingizni faollashtiradi.',
+                '',
+                `🆔 Sizning Chat ID: <code>${chatId}</code>`,
+                '',
+                '📞 Adminga bog\'laning yoki kutib turing.',
+              ].join('\n');
+              // Adminni xabardor qilamiz
+              await notifyAdminsOfNewUser(chatId, name, from.username ?? '');
+            } else if (result.isActive) {
+              reply = [
+                `👋 Salom, <b>${name}</b>!`,
+                '',
+                '✅ Siz allaqachon faol foydalanuvchisiz.',
+                '',
+                'Buyruqlar: /stats /top /blocks /help',
+              ].join('\n');
+            } else {
+              reply = [
+                `👋 Salom, <b>${name}</b>!`,
+                '',
+                '⏳ Sizning akkauntingiz hali tasdiqlanmagan.',
+                'Admin tasdiqlashini kuting.',
+                '',
+                `🆔 Chat ID: <code>${chatId}</code>`,
+              ].join('\n');
+            }
+            await sendToChat(String(chatId), reply);
+            continue;
+          }
+
+          if (!text.startsWith('/')) continue;
+
+          // Boshqa buyruqlar — faqat aktiv foydalanuvchilar uchun
+          let isActive = false;
+          try {
+            const db = openDb();
+            const row = db
+              .prepare(`SELECT is_active FROM telegram_users WHERE chat_id = ?`)
+              .get(String(chatId)) as { is_active: number } | undefined;
+            isActive = !!row?.is_active;
+          } catch { /* ignore */ }
+
+          if (!isActive) {
+            await sendToChat(
+              String(chatId),
+              '⏳ Sizning akkauntingiz hali tasdiqlanmagan. /start bilan ro\'yxatdan o\'ting yoki admin tasdiqlashini kuting.',
+            );
+            continue;
+          }
+
           const cmd = text.split(/\s+/)[0]!.split('@')[0]!.toLowerCase();
           const handler = handlers[cmd];
           if (handler) {
             try {
               const reply = await handler();
-              await fetch(`${API_BASE}/sendMessage`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  chat_id: upd.message!.chat.id,
-                  text: reply,
-                  parse_mode: 'HTML',
-                  disable_web_page_preview: true,
-                }),
-              });
+              await sendToChat(String(chatId), reply);
             } catch (err) {
               log.warn({ err: (err as Error).message, cmd }, 'Buyruq handleri xato');
             }

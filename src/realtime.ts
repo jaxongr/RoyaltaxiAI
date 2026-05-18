@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Real-time monitor — har 30 sek yangi tugagan zakazlarni tortib,
  * AI-siz qoidalar dvigateliga uzatadi, shubhali bo'lsa alert + driver belgilash.
  *
@@ -19,7 +19,7 @@ import {
 } from './scraper/browser.js';
 import { login } from './scraper/auth.js';
 import { URLS } from './scraper/selectors.js';
-import { getOrders, getOrderDetails, toDbOrder } from './scraper/api.js';
+import { getOrders, getOrderDetails, toDbOrder, getAccessibleOffices } from './scraper/api.js';
 import {
   openDb,
   insertOrder,
@@ -34,6 +34,7 @@ import {
   sendStartup,
   sendHeartbeat,
   sendPeriodicReport,
+  sendDailyReport,
   sendNoOrdersAlert,
   sendSiteRestored,
   startCommandLoop,
@@ -49,6 +50,38 @@ interface MonitorStats {
   lastNewFinishAt: number;
   consecutiveEmptyTicks: number;
   consecutiveSiteErrors: number;
+}
+
+// Loginga ruxsat etilgan barcha shaharlar (officeId'lar) — sayt'ning
+// "Подразделение" filteri default'da hammasini belgilamaganligi uchun
+// biz explicit ravishda hammasini uzatamiz. Bo'sh array yoki null = "barcha"
+// (sayt'ning saqlangan filteri ishlatiladi). Aniq ro'yxat yaxshiroq.
+let accessibleOfficeIds: number[] | null = null;
+let accessibleOfficesRefreshedAt = 0;
+
+async function refreshAccessibleOffices(session: BrowserSession): Promise<void> {
+  try {
+    const resp = await getAccessibleOffices(session.page);
+    const ids = resp.offices?.map((o) => o.officeId) ?? [];
+    if (ids.length > 0) {
+      accessibleOfficeIds = ids;
+      accessibleOfficesRefreshedAt = Date.now();
+      const names = resp.offices.map((o) => `${o.name} (${o.officeId}, ${o.fleets.length} park)`);
+      logger.info(
+        { count: ids.length, offices: names },
+        `🏢 Подразделение: ${ids.length} ta shahar topildi (hammasi monitoring uchun belgilanadi)`,
+      );
+    } else {
+      logger.warn('Подразделение API bo\'sh ro\'yxat qaytardi — fallback: officeIds=null');
+      accessibleOfficeIds = null;
+    }
+  } catch (err) {
+    logger.warn(
+      { err: (err as Error).message },
+      'Подразделение enumeratsiya xato — fallback: officeIds=null',
+    );
+    accessibleOfficeIds = null;
+  }
 }
 
 function parseArgs(): {
@@ -109,6 +142,7 @@ async function fetchSiteTotalToday(session: BrowserSession): Promise<number | nu
       limit: 1,
       periodStart: formatTs(start),
       periodEnd: formatTs(end),
+      officeIds: accessibleOfficeIds,
     });
     return resp.state?.total ?? resp.state?.totalCount ?? null;
   } catch {
@@ -129,11 +163,19 @@ async function tick(
   const periodStart = formatTs(start);
   const periodEnd = formatTs(end);
 
+  // Подразделение ro'yxatini har 30 daqiqada yangilab turamiz
+  // (yangi shahar qo'shilsa, monitoring uchun belgilanadi)
+  if (Date.now() - accessibleOfficesRefreshedAt > 30 * 60 * 1000) {
+    await refreshAccessibleOffices(session);
+  }
+
   // get-orders: BARCHA SAHIFALARNI paginate qilamiz — bitta zakaz ham qolmasin
+  // officeIds: barcha accessible shaharlar (Poytug', Toshkent va h.k. tushib qolmasin)
   const BATCH = 200;
   const MAX_PAGES = 200; // xavfsizlik chegarasi (40k zakazgacha)
   const firstResp = await getOrders(session.page, {
     offset: 0, limit: BATCH, periodStart, periodEnd,
+    officeIds: accessibleOfficeIds,
   });
   type Item = (typeof firstResp.state.items)[number];
   const items: Item[] = [...(firstResp.state?.items ?? [])];
@@ -142,6 +184,7 @@ async function tick(
     for (let page = 1; page < MAX_PAGES; page++) {
       const r = await getOrders(session.page, {
         offset: page * BATCH, limit: BATCH, periodStart, periodEnd,
+        officeIds: accessibleOfficeIds,
       });
       const batch = r.state?.items ?? [];
       if (batch.length === 0) break;
@@ -159,7 +202,7 @@ async function tick(
   // Har 10-tickda bugungi totalCount ni saytdan so'raymiz (coverage uchun)
   if (stats && stats.ticks % 10 === 0) {
     const siteTotal = await fetchSiteTotalToday(session);
-    const today = new Date().toISOString().slice(0, 10);
+    const today = new Date(Date.now() + 5*3600*1000).toISOString().slice(0, 10);
     const ourCount = (
       db.prepare(`SELECT COUNT(*) as c FROM orders WHERE date = ?`).get(today) as { c: number }
     ).c;
@@ -216,7 +259,7 @@ async function tick(
       .prepare(
         `SELECT COUNT(*) as cnt, COALESCE(SUM(fraud_score), 0) as total
          FROM fraud_alerts WHERE callsign = ?
-         AND date(created_at) >= date('now', '-7 days')`,
+         AND date(created_at) >= date('now', '+5 hours', '-7 days')`,
       )
       .get(row.callsign) as { cnt: number; total: number };
 
@@ -306,17 +349,30 @@ async function tick(
  * Aks holda .env qiymatlari ishlatiladi.
  */
 function applyActiveCredentialFromDb(db: Database.Database): void {
+  // Agar dashboard tomonidan SITE_ID env bilan ishga tushgan bo'lsa,
+  // dashboard allaqachon ROYALTAXI_BASE_URL/USERNAME/PASSWORD'ni env'ga qo'ygan.
+  // Bu funksiya faqat eski usulda (manual realtime.ts ishga tushirilsa) kerak.
+  if (process.env.SITE_ID) {
+    logger.info(
+      { siteId: process.env.SITE_ID, siteName: process.env.SITE_NAME, url: process.env.ROYALTAXI_BASE_URL },
+      'Multi-site monitor — env\'dagi credentials ishlatiladi',
+    );
+    return;
+  }
   const row = db
     .prepare(
       `SELECT base_url, username, password FROM site_credentials WHERE is_active = 1 LIMIT 1`,
     )
     .get() as { base_url: string; username: string; password: string } | undefined;
   if (row) {
-    process.env.ROYALTAXI_BASE_URL = row.base_url;
+    // base_url normalizatsiya — oxiridagi / va /management/ olib tashlanadi
+    let baseUrl = row.base_url.replace(/\/+$/, '');
+    baseUrl = baseUrl.replace(/\/management\/?$/, '');
+    process.env.ROYALTAXI_BASE_URL = baseUrl;
     process.env.ROYALTAXI_USERNAME = row.username;
     process.env.ROYALTAXI_PASSWORD = row.password;
     logger.info(
-      { url: row.base_url, user: row.username },
+      { url: baseUrl, user: row.username },
       'DB dan faol credential yuklandi (.env override)',
     );
   } else {
@@ -331,9 +387,15 @@ async function bootSession(archiveUrl: string): Promise<BrowserSession> {
     .goto(archiveUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 })
     .catch(() => undefined);
   await humanPause(2000, 3000);
-  await session.page.waitForSelector('.hv-table__body-row.hv-table__body-row--body', {
-    timeout: 25_000,
-  });
+  // Jadval qatorini kutamiz, lekin bo'sh sayt uchun (yangi credential) bu xato emas.
+  // Empty state'ni ham qabul qilamiz — birinchi marta urinishda agar zakaz yo'q bo'lsa.
+  await session.page
+    .waitForSelector('.hv-table__body-row.hv-table__body-row--body, .hv-table__empty, .hv-table', {
+      timeout: 25_000,
+    })
+    .catch(() => {
+      logger.warn('Archive jadvali topilmadi — sayt bo\'sh yoki UI boshqa. Davom etamiz.');
+    });
   return session;
 }
 
@@ -357,18 +419,26 @@ async function startupBackfill(
   // Avval sayt nima deyishini olamiz (totalCount)
   const probe = await getOrders(session.page, {
     offset: 0, limit: 1, periodStart, periodEnd,
+    officeIds: accessibleOfficeIds,
   });
   const siteToday = probe.state?.total ?? 0;
 
-  const today = now.toISOString().slice(0, 10);
-  const ourToday = (
-    db.prepare(`SELECT COUNT(*) as c FROM orders WHERE date = ?`).get(today) as { c: number }
-  ).c;
+  const today = new Date(now.getTime() + 5*3600*1000).toISOString().slice(0, 10);
+  // Multi-site: SITE_ID bo'lsa, faqat shu saytning today count'i
+  const siteIdEnv = process.env.SITE_ID ? parseInt(process.env.SITE_ID, 10) : null;
+  const ourToday = siteIdEnv
+    ? (db
+        .prepare(`SELECT COUNT(*) as c FROM orders WHERE date = ? AND site_id = ?`)
+        .get(today, siteIdEnv) as { c: number }
+      ).c
+    : (
+        db.prepare(`SELECT COUNT(*) as c FROM orders WHERE date = ?`).get(today) as { c: number }
+      ).c;
 
   const gap = siteToday - ourToday;
   if (gap < 50) {
     logger.info(
-      { siteToday, ourToday, gap },
+      { siteToday, ourToday, gap, siteId: siteIdEnv },
       'Backfill kerak emas — bugungi DB to\'liq',
     );
     return;
@@ -387,6 +457,7 @@ async function startupBackfill(
   while (offset < siteToday + 500) {
     const resp = await getOrders(session.page, {
       offset, limit: BATCH, periodStart, periodEnd,
+      officeIds: accessibleOfficeIds,
     });
     const items = resp.state?.items ?? [];
     if (items.length === 0) break;
@@ -415,6 +486,44 @@ async function startupBackfill(
               details: result.reasons.join(' | '),
             });
             markOrderFraud(db, row.order_id, result.score, result.reasons);
+
+            // Telegram alert — faqat oxirgi 2 soat ichidagi zakazlar uchun
+            // (eski backfillda spam bo'lib ketmasin)
+            const orderTime = row.date && row.time
+              ? new Date(`${row.date}T${row.time}+05:00`).getTime()
+              : 0;
+            const ageMs = Date.now() - orderTime;
+            if (orderTime > 0 && ageMs < 2 * 60 * 60 * 1000) {
+              const aggRow = db
+                .prepare(
+                  `SELECT COUNT(*) as cnt, COALESCE(SUM(fraud_score), 0) as total
+                   FROM fraud_alerts WHERE callsign = ?
+                   AND date(created_at) >= date('now', '+5 hours', '-7 days')`,
+                )
+                .get(row.callsign) as { cnt: number; total: number };
+              const shouldBlock =
+                result.score >= FRAUD_THRESHOLDS.AUTO_BLOCK ||
+                aggRow.total >= FRAUD_THRESHOLDS.WEEKLY_TOTAL_BLOCK ||
+                aggRow.cnt >= FRAUD_THRESHOLDS.WEEKLY_COUNT_BLOCK;
+              void sendAlert({
+                callsign: row.callsign,
+                driver: row.driver_name || '(noma\'lum)',
+                score: result.score,
+                orderId: row.order_id,
+                distance: row.distance_km,
+                duration: row.duration_sec,
+                amount: row.amount,
+                address: row.address,
+                region: row.region,
+                service: row.service,
+                reasons: result.reasons,
+                isBlockRecommendation: shouldBlock,
+                totalScore: shouldBlock ? aggRow.total : undefined,
+                alertCount: shouldBlock ? aggRow.cnt : undefined,
+                date: row.date,
+                time: row.time,
+              });
+            }
           }
         }
       }
@@ -437,7 +546,7 @@ async function startupBackfill(
 
 function buildStatsHandler(db: Database.Database, s: MonitorStats): () => Promise<string> {
   return async () => {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = new Date(Date.now() + 5*3600*1000).toISOString().slice(0, 10);
     const alertsToday = (
       db
         .prepare(`SELECT COUNT(*) as c FROM fraud_alerts WHERE date(created_at) = ?`)
@@ -470,7 +579,7 @@ function buildTopHandler(db: Database.Database): () => Promise<string> {
       .prepare(
         `SELECT callsign, driver_name, COUNT(*) as cnt, SUM(fraud_score) as total
          FROM fraud_alerts
-         WHERE date(created_at) = date('now', 'localtime')
+         WHERE date(created_at) = date('now', '+5 hours', 'localtime')
          GROUP BY callsign, driver_name
          ORDER BY total DESC LIMIT 10`,
       )
@@ -584,6 +693,129 @@ async function main(): Promise<void> {
     60 * 60 * 1000, // har 60 daqiqa
   );
 
+  // Kunlik hisobot — har kuni 23:59'da (Asia/Tashkent vaqti)
+  // Server timezone UZ ga sozlangan (timedatectl Asia/Tashkent)
+  let lastDailyReportDate = '';
+  setInterval(
+    () => {
+      const now = new Date();
+      const today = new Date(now.getTime() + 5*3600*1000).toISOString().slice(0, 10);
+      // 23:59 (server lokal vaqti) — minute = 59, hour = 23
+      const isWindow = now.getHours() === 23 && now.getMinutes() >= 59;
+      if (!isWindow || lastDailyReportDate === today) return;
+      lastDailyReportDate = today;
+
+      try {
+        const todayOrders = db
+          .prepare(
+            `SELECT
+               COUNT(*) as orders,
+               SUM(CASE WHEN status='finish' THEN 1 ELSE 0 END) as completed,
+               SUM(CASE WHEN status='order_cancelled' THEN 1 ELSE 0 END) as cancelled,
+               COALESCE(SUM(amount), 0) as totalAmount,
+               COUNT(DISTINCT callsign) as activeDrivers
+             FROM orders WHERE date = ?`,
+          )
+          .get(today) as { orders: number; completed: number; cancelled: number; totalAmount: number; activeDrivers: number };
+
+        const newClients = (
+          db.prepare(
+            `WITH first_order AS (
+               SELECT client_phone, MIN(date) as first FROM orders WHERE client_phone != '' GROUP BY client_phone
+             ) SELECT COUNT(*) as c FROM first_order WHERE first = ?`,
+          ).get(today) as { c: number }
+        ).c;
+
+        const alertsCount = (
+          db.prepare(`SELECT COUNT(*) as c FROM fraud_alerts WHERE date(created_at) = ?`).get(today) as { c: number }
+        ).c;
+        const blocksCount = (
+          db.prepare(`SELECT COUNT(*) as c FROM driver_blocks WHERE date(blocked_at) = ?`).get(today) as { c: number }
+        ).c;
+
+        const topDriverRow = db
+          .prepare(
+            `SELECT callsign, driver_name as name, COUNT(*) as orders, COALESCE(SUM(amount), 0) as amount
+             FROM orders WHERE date = ? AND callsign != ''
+             GROUP BY callsign ORDER BY amount DESC LIMIT 1`,
+          )
+          .get(today) as { callsign: string; name: string; orders: number; amount: number } | undefined;
+
+        const topRegionRow = db
+          .prepare(
+            `SELECT region, COUNT(*) as orders FROM orders
+             WHERE date = ? AND region != '' AND region IS NOT NULL
+             GROUP BY region ORDER BY orders DESC LIMIT 1`,
+          )
+          .get(today) as { region: string; orders: number } | undefined;
+
+        const topFraudRow = db
+          .prepare(
+            `SELECT callsign, driver_name as name, SUM(fraud_score) as score
+             FROM fraud_alerts WHERE date(created_at) = ?
+             GROUP BY callsign ORDER BY score DESC LIMIT 1`,
+          )
+          .get(today) as { callsign: string; name: string; score: number } | undefined;
+
+        // Bashorat: ertaga uchun
+        const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+        const tomorrowWeekday = tomorrow.getDay();
+        const weekdayNames = ['Yakshanba', 'Dushanba', 'Seshanba', 'Chorshanba', 'Payshanba', 'Juma', 'Shanba'];
+
+        const sameWk = db
+          .prepare(
+            `SELECT COUNT(*) as orders, COUNT(DISTINCT callsign) as drivers
+             FROM orders WHERE date >= date('now', '+5 hours', '-28 days') AND date < date('now', '+5 hours')
+               AND CAST(strftime('%w', date) AS INTEGER) = ?`,
+          )
+          .get(tomorrowWeekday) as { orders: number; drivers: number };
+        const last7 = db
+          .prepare(
+            `SELECT AVG(daily_count) as avg FROM (
+               SELECT COUNT(*) as daily_count FROM orders
+               WHERE date >= date('now', '+5 hours', '-7 days') AND date < date('now', '+5 hours')
+               GROUP BY date
+             )`,
+          )
+          .get() as { avg: number | null };
+        const sameWkDays = db
+          .prepare(
+            `SELECT COUNT(DISTINCT date) as days FROM orders
+             WHERE date >= date('now', '+5 hours', '-28 days') AND date < date('now', '+5 hours')
+               AND CAST(strftime('%w', date) AS INTEGER) = ?`,
+          )
+          .get(tomorrowWeekday) as { days: number };
+        const avgSameWk = sameWkDays.days > 0 ? Math.round(sameWk.orders / sameWkDays.days) : 0;
+        const avgDriversSameWk = sameWkDays.days > 0 ? Math.round(sameWk.drivers / sameWkDays.days) : 0;
+        const avgLast7 = Math.round(last7.avg ?? 0);
+        const predictedOrders = Math.round(avgSameWk * 0.6 + avgLast7 * 0.4);
+
+        void sendDailyReport({
+          date: today,
+          orders: todayOrders.orders,
+          completed: todayOrders.completed,
+          cancelled: todayOrders.cancelled,
+          totalAmount: todayOrders.totalAmount,
+          activeDrivers: todayOrders.activeDrivers,
+          newClients,
+          alerts: alertsCount,
+          blocks: blocksCount,
+          topDriver: topDriverRow,
+          topRegion: topRegionRow,
+          topFraud: topFraudRow,
+          forecast: {
+            tomorrowOrders: predictedOrders,
+            tomorrowDrivers: avgDriversSameWk,
+            weekday: weekdayNames[tomorrowWeekday] ?? '',
+          },
+        });
+      } catch (err) {
+        logger.error({ err: (err as Error).message }, 'Kunlik hisobot xato');
+      }
+    },
+    60 * 1000, // har daqiqa tekshiriladi, 23:59 oynasi bo'lsa yuboriladi
+  );
+
   // "Yangi zakaz yo'q" alarm — har 5 daqiqada tekshiradi
   let noOrdersAlertSent = false;
   let lastNoOrderAt = 0;
@@ -607,7 +839,7 @@ async function main(): Promise<void> {
   // Heartbeat — har N daqiqada
   setInterval(
     () => {
-      const today = new Date().toISOString().slice(0, 10);
+      const today = new Date(Date.now() + 5*3600*1000).toISOString().slice(0, 10);
       const alertsToday = (
         db
           .prepare(`SELECT COUNT(*) as c FROM fraud_alerts WHERE date(created_at) = ?`)
@@ -640,8 +872,14 @@ async function main(): Promise<void> {
     try {
       logger.info({ bootRetry }, 'Sessiya yaratilmoqda...');
       session = await bootSession(archiveUrl);
+      _setActiveSession(session);
       logger.info('Sahifa tayyor — monitoring siklini boshlaymiz');
       bootRetry = 0;
+
+      // Подразделение ro'yxati — login'ga ruxsat etilgan barcha shaharlar
+      // Bu qilingan bo'lsa, getOrders har bir tickda explicit officeIds
+      // bilan chaqiriladi, Poytug' va boshqa tumanlar tushib qolmaydi.
+      await refreshAccessibleOffices(session);
 
       // Startup backfill — bugun 00:00 dan tortib olmagan zakazlarni to'ldiramiz
       // Faqat birinchi sessiyada (qayta-tiklashda emas)
@@ -701,10 +939,24 @@ async function main(): Promise<void> {
   }
 }
 
-process.on('SIGINT', () => {
-  logger.info('SIGINT — chiqish');
+// Active session reference (graceful shutdown uchun)
+let _activeSession: BrowserSession | null = null;
+export function _setActiveSession(s: BrowserSession | null): void { _activeSession = s; }
+
+async function gracefulExit(signal: string): Promise<void> {
+  logger.info({ signal }, 'Monitor yopilmoqda');
+  if (_activeSession) {
+    try {
+      await Promise.race([
+        closeBrowserSession(_activeSession),
+        new Promise<void>((r) => setTimeout(r, 3000)),
+      ]);
+    } catch { /* ignore */ }
+  }
   process.exit(0);
-});
+}
+process.on('SIGINT', () => { void gracefulExit('SIGINT'); });
+process.on('SIGTERM', () => { void gracefulExit('SIGTERM'); });
 process.on('unhandledRejection', (r) => {
   logger.fatal({ r }, 'Unhandled rejection');
 });

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Web dashboard — saxifali, hududlar bo'yicha, statistika va filtrlar.
  * Foydalanish:
  *   npm run dashboard
@@ -7,7 +7,7 @@
 import { createServer } from 'node:http';
 import { parse as parseUrl } from 'node:url';
 import { resolve, extname } from 'node:path';
-import { existsSync, readFileSync, appendFileSync, writeFileSync, statSync, readFile } from 'node:fs';
+import { existsSync, readFileSync, appendFileSync, writeFileSync, statSync, readFile, unlinkSync } from 'node:fs';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { openDb, DB_PATH } from './db.js';
@@ -549,7 +549,34 @@ function send(res: import('node:http').ServerResponse, status: number, body: unk
 }
 
 function today(): string {
-  return new Date().toISOString().slice(0, 10);
+  // UZ (Asia/Tashkent, UTC+5) vaqti bo'yicha bugungi sana
+  const utcMs = Date.now();
+  const uzMs = utcMs + 5 * 60 * 60 * 1000;
+  return new Date(uzMs).toISOString().slice(0, 10);
+}
+
+function daysAgo(n: number): string {
+  // UZ vaqti bo'yicha N kun ortga sana (YYYY-MM-DD)
+  const utcMs = Date.now();
+  const uzMs = utcMs + 5 * 60 * 60 * 1000 - n * 24 * 60 * 60 * 1000;
+  return new Date(uzMs).toISOString().slice(0, 10);
+}
+
+// Simple in-memory cache (5-30 sek TTL) — analytics endpoint takror so'rovi tezroq
+const cache: Map<string, { value: unknown; expiresAt: number }> = new Map();
+function withCache<T>(key: string, ttlMs: number, fn: () => T): T {
+  const now = Date.now();
+  const hit = cache.get(key);
+  if (hit && hit.expiresAt > now) return hit.value as T;
+  const value = fn();
+  cache.set(key, { value, expiresAt: now + ttlMs });
+  // Cache size'ni cheklash (memory leak'dan saqlash)
+  if (cache.size > 100) {
+    for (const [k, v] of cache.entries()) {
+      if (v.expiresAt < now) cache.delete(k);
+    }
+  }
+  return value;
 }
 
 const ROUTES: Record<string, (q: URLSearchParams) => unknown> = {
@@ -559,36 +586,67 @@ const ROUTES: Record<string, (q: URLSearchParams) => unknown> = {
     const alertsToday = (db.prepare(`SELECT COUNT(*) as c FROM fraud_alerts WHERE date(created_at) = ?`).get(t) as { c: number }).c;
     const blocksTotal = (db.prepare('SELECT COUNT(*) as c FROM driver_blocks').get() as { c: number }).c;
     const alertsLastHour = (db.prepare(`SELECT COUNT(*) as c FROM fraud_alerts WHERE datetime(created_at) >= datetime('now', '-1 hour')`).get() as { c: number }).c;
-    const state = db.prepare(`SELECT last_tick_at, tick_count, site_total_today, our_count_today FROM monitor_state WHERE id = 1`).get() as { last_tick_at: string | null; tick_count: number; site_total_today: number; our_count_today: number } | undefined;
+
+    // Multi-site: hamma sayt'lardan jami site_total va our_count
+    const allSiteStates = db
+      .prepare(`SELECT COALESCE(SUM(site_total_today),0) st, COALESCE(SUM(our_count_today),0) oc, MAX(last_tick_at) lt, COALESCE(SUM(tick_count),0) tc FROM site_monitor_state`)
+      .get() as { st: number; oc: number; lt: string | null; tc: number };
+    // Eski monitor_state (fallback)
+    const oldState = db.prepare(`SELECT last_tick_at, tick_count, site_total_today, our_count_today FROM monitor_state WHERE id = 1`).get() as { last_tick_at: string | null; tick_count: number; site_total_today: number; our_count_today: number } | undefined;
+
+    const lastTick = allSiteStates.lt ?? oldState?.last_tick_at ?? null;
     let secondsSinceLastTick: number | null = null;
-    if (state?.last_tick_at) {
-      const dt = new Date(state.last_tick_at + 'Z').getTime();
+    if (lastTick) {
+      const dt = new Date(lastTick + 'Z').getTime();
       if (!isNaN(dt)) secondsSinceLastTick = Math.round((Date.now() - dt) / 1000);
     }
-    const siteTotal = state?.site_total_today ?? null;
-    const ourCount = state?.our_count_today ?? ordersToday;
-    const coveragePct = siteTotal && siteTotal > 0 ? Math.round((ourCount / siteTotal) * 1000) / 10 : null;
+    // Jami sayt totallari (multi-site) yoki eski
+    const siteTotal = allSiteStates.st > 0 ? allSiteStates.st : (oldState?.site_total_today ?? null);
+    const ourCount = ordersToday; // bizning DB'dagi haqiqiy son
+    const coveragePct = siteTotal && siteTotal > 0
+      ? Math.min(100, Math.round((ourCount / siteTotal) * 1000) / 10)
+      : null;
     const recent = (db.prepare(`SELECT COUNT(*) as c FROM orders WHERE datetime(scraped_at) >= datetime('now', '-5 minutes')`).get() as { c: number }).c;
     const rate = Math.round((recent / 5) * 10) / 10;
-    return { ordersToday, alertsToday, blocksTotal, alertsLastHour, secondsSinceLastTick, coveragePct, siteTotalToday: siteTotal, ourCountToday: ourCount, tickCount: state?.tick_count ?? 0, rate };
+    const tickCount = allSiteStates.tc > 0 ? allSiteStates.tc : (oldState?.tick_count ?? 0);
+    return { ordersToday, alertsToday, blocksTotal, alertsLastHour, secondsSinceLastTick, coveragePct, siteTotalToday: siteTotal, ourCountToday: ourCount, tickCount, rate };
   },
 
   '/api/regions': () => {
     const t = today();
-    const items = db.prepare(`
+    const baseItems = db.prepare(`
       SELECT region,
         COUNT(*) as orders,
         SUM(CASE WHEN status = 'finish' THEN 1 ELSE 0 END) as completed,
         SUM(CASE WHEN status = 'order_cancelled' THEN 1 ELSE 0 END) as cancelled,
-        SUM(CASE WHEN fraud_score >= 50 THEN 1 ELSE 0 END) as alerts,
-        (SELECT COUNT(*) FROM driver_blocks db2 WHERE db2.callsign IN (SELECT callsign FROM orders o2 WHERE o2.region = orders.region)) as blocks,
-        (SELECT driver_name FROM orders o3 WHERE o3.region = orders.region AND o3.date = ? GROUP BY driver_name ORDER BY COUNT(*) DESC LIMIT 1) as topDriver
+        SUM(CASE WHEN fraud_score >= 50 THEN 1 ELSE 0 END) as alerts
       FROM orders
       WHERE date = ? AND region != '' AND region IS NOT NULL
       GROUP BY region
       ORDER BY orders DESC
-    `).all(t, t);
-    return { items };
+    `).all(t) as Array<Record<string, unknown>>;
+
+    if (baseItems.length === 0) return { items: [] };
+    // Top driver per region — bitta query
+    const topDriverRows = db.prepare(`
+      SELECT region, driver_name, COUNT(*) as cnt
+      FROM orders WHERE date = ? AND region != '' AND driver_name != ''
+      GROUP BY region, driver_name
+    `).all(t) as Array<{ region: string; driver_name: string; cnt: number }>;
+    const topByRegion = new Map<string, { name: string; cnt: number }>();
+    for (const r of topDriverRows) {
+      const cur = topByRegion.get(r.region);
+      if (!cur || r.cnt > cur.cnt) {
+        topByRegion.set(r.region, { name: r.driver_name, cnt: r.cnt });
+      }
+    }
+    // Blocks count overall (umumiy)
+    const blocksTotal = (db.prepare(`SELECT COUNT(*) as c FROM driver_blocks WHERE applied = 1`).get() as { c: number }).c;
+    for (const it of baseItems) {
+      it.topDriver = topByRegion.get(it.region as string)?.name ?? null;
+      it.blocks = blocksTotal; // overall (har region uchun bir xil — yaxshilash kerak bo'lsa keyinroq)
+    }
+    return { items: baseItems };
   },
 
   '/api/region': (q) => {
@@ -617,6 +675,7 @@ const ROUTES: Record<string, (q: URLSearchParams) => unknown> = {
   '/api/drivers': (q) => {
     const search = (q.get('q') ?? '').trim();
     const sort = q.get('sort') ?? 'alerts';
+    return withCache(`drivers:${search}:${sort}`, 5 * 60_000, () => {
     const order = sort === 'orders' ? 'orders DESC' : sort === 'cancel' ? 'cancelled DESC' : sort === 'score' ? 'total_score DESC' : 'alerts DESC';
     const where = search ? `WHERE (driver_name LIKE @s OR callsign LIKE @s) AND callsign != ''` : `WHERE callsign != ''`;
     const items = db.prepare(`
@@ -625,15 +684,24 @@ const ROUTES: Record<string, (q: URLSearchParams) => unknown> = {
         SUM(CASE WHEN o.status = 'finish' THEN 1 ELSE 0 END) as completed,
         SUM(CASE WHEN o.status = 'order_cancelled' THEN 1 ELSE 0 END) as cancelled,
         SUM(CASE WHEN o.fraud_score >= 50 THEN 1 ELSE 0 END) as alerts,
-        COALESCE(SUM(o.fraud_score), 0) as total_score,
-        (SELECT 1 FROM driver_blocks db2 WHERE db2.callsign = o.callsign) as is_blocked
+        COALESCE(SUM(o.fraud_score), 0) as total_score
       FROM orders o
       ${where}
       GROUP BY o.callsign, o.driver_name
       ORDER BY ${order}
       LIMIT 200
-    `).all({ s: `%${search}%` });
+    `).all({ s: `%${search}%` }) as Array<Record<string, unknown>>;
+
+    // is_blocked alohida — kichik table
+    if (items.length > 0) {
+      const blockRows = db.prepare(`SELECT DISTINCT callsign FROM driver_blocks WHERE applied=1`).all() as Array<{ callsign: string }>;
+      const blockSet = new Set(blockRows.map((r) => r.callsign));
+      for (const it of items) {
+        it.is_blocked = blockSet.has(it.callsign as string) ? 1 : null;
+      }
+    }
     return { items };
+    });
   },
 
   '/api/driver': (q) => {
@@ -662,7 +730,7 @@ const ROUTES: Record<string, (q: URLSearchParams) => unknown> = {
     const minScore = parseInt(q.get('minScore') ?? '50', 10);
     const limit = Math.min(parseInt(q.get('limit') ?? '50', 10), 1000);
     const params: Record<string, unknown> = { days, min: minScore };
-    let where = `a.fraud_score >= @min AND date(a.created_at) >= date('now', '-' || @days || ' days')`;
+    let where = `a.fraud_score >= @min AND date(a.created_at) >= date('now', '+5 hours', '-' || @days || ' days')`;
     if (region) {
       where += ` AND o.region = @r`;
       params.r = region;
@@ -714,16 +782,16 @@ const ROUTES: Record<string, (q: URLSearchParams) => unknown> = {
 
   '/api/clients': (q) => {
     const search = (q.get('q') ?? '').trim();
+    return withCache(`clients:${search}`, 5 * 60_000, () => {
     const where = search
       ? `client_phone LIKE @s AND client_phone != ''`
       : `client_phone != ''`;
-    const items = db
+    // Avval base — clients + orders + distinct drivers
+    const base = db
       .prepare(
         `SELECT client_phone,
                 COUNT(*) as orders,
                 COUNT(DISTINCT driver_name) as distinct_drivers,
-                (SELECT driver_name FROM orders o2 WHERE o2.client_phone = orders.client_phone GROUP BY driver_name ORDER BY COUNT(*) DESC LIMIT 1) as top_driver,
-                (SELECT COUNT(*) FROM orders o3 WHERE o3.client_phone = orders.client_phone AND o3.driver_name = (SELECT driver_name FROM orders o4 WHERE o4.client_phone = orders.client_phone GROUP BY driver_name ORDER BY COUNT(*) DESC LIMIT 1)) as top_driver_count,
                 GROUP_CONCAT(DISTINCT region) as regions
          FROM orders
          WHERE ${where}
@@ -732,8 +800,34 @@ const ROUTES: Record<string, (q: URLSearchParams) => unknown> = {
          ORDER BY orders DESC, distinct_drivers ASC
          LIMIT 200`,
       )
-      .all({ s: `%${search}%` });
-    return { items };
+      .all({ s: `%${search}%` }) as Array<Record<string, unknown>>;
+
+    if (base.length === 0) return { items: [] };
+    // Top driver — har telefon uchun bitta query (200x kichik)
+    const phones = base.map((b) => b.client_phone as string);
+    const ph = phones.map(() => '?').join(',');
+    const topDriverRows = db
+      .prepare(
+        `SELECT client_phone, driver_name, COUNT(*) as cnt FROM orders
+         WHERE client_phone IN (${ph}) AND driver_name != ''
+         GROUP BY client_phone, driver_name`,
+      )
+      .all(...phones) as Array<{ client_phone: string; driver_name: string; cnt: number }>;
+    // Har telefon uchun eng yuqori driver
+    const topMap = new Map<string, { name: string; cnt: number }>();
+    for (const r of topDriverRows) {
+      const cur = topMap.get(r.client_phone);
+      if (!cur || r.cnt > cur.cnt) {
+        topMap.set(r.client_phone, { name: r.driver_name, cnt: r.cnt });
+      }
+    }
+    for (const b of base) {
+      const td = topMap.get(b.client_phone as string);
+      b.top_driver = td?.name ?? null;
+      b.top_driver_count = td?.cnt ?? 0;
+    }
+    return { items: base };
+    });
   },
 
   '/api/report': (q) => {
@@ -830,6 +924,28 @@ const ROUTES: Record<string, (q: URLSearchParams) => unknown> = {
     return { items, total };
   },
 
+  '/api/telegram-users': () => {
+    const items = db.prepare(`
+      SELECT id, chat_id, full_name, username, role, regions,
+             receive_alerts, receive_daily_report, receive_no_orders_alert,
+             is_active, note, created_at, updated_at
+      FROM telegram_users ORDER BY is_active DESC, id ASC
+    `).all();
+    return { items };
+  },
+
+  // Mavjud hududlar ro'yxati — UI'da multi-select uchun
+  '/api/region-list': () => {
+    const items = db
+      .prepare(
+        `SELECT region, COUNT(*) as cnt FROM orders
+         WHERE region IS NOT NULL AND region != ''
+         GROUP BY region ORDER BY cnt DESC`,
+      )
+      .all() as Array<{ region: string; cnt: number }>;
+    return { items };
+  },
+
   '/api/lock-kinds': () => {
     const items = db.prepare(`SELECT kind_id, name FROM lock_kinds ORDER BY name`).all();
     return { items };
@@ -858,31 +974,643 @@ const ROUTES: Record<string, (q: URLSearchParams) => unknown> = {
     return { items };
   },
 
+  // Soat × hafta kuni heatmap (7x24 jadval — qaysi soatda zakaz ko'p)
+  '/api/heatmap': (q) => {
+    const days = parseInt(q.get('days') ?? '30', 10);
+    return withCache(`heatmap:${days}`, 5 * 60_000, () => {
+    const cutoff = daysAgo(days);
+    const rows = db
+      .prepare(
+        `SELECT
+           CAST(strftime('%w', date) AS INTEGER) as weekday,
+           CAST(substr(time, 1, 2) AS INTEGER) as hour,
+           COUNT(*) as orders,
+           COUNT(DISTINCT callsign) as drivers
+         FROM orders
+         WHERE date >= ?
+           AND date IS NOT NULL AND date != ''
+           AND time IS NOT NULL AND time != ''
+         GROUP BY weekday, hour`,
+      )
+      .all(cutoff) as Array<{ weekday: number; hour: number; orders: number; drivers: number }>;
+
+    // 7 (kun) × 24 (soat) matritsa
+    const matrix: Array<Array<{ orders: number; drivers: number }>> = Array.from(
+      { length: 7 },
+      () => Array.from({ length: 24 }, () => ({ orders: 0, drivers: 0 })),
+    );
+    let max = 0;
+    for (const r of rows) {
+      if (r.weekday >= 0 && r.weekday < 7 && r.hour >= 0 && r.hour < 24) {
+        matrix[r.weekday]![r.hour] = { orders: r.orders, drivers: r.drivers };
+        if (r.orders > max) max = r.orders;
+      }
+    }
+    return { matrix, max, days };
+    });
+  },
+
+  // Haydovchilar aktivligi — ishga chiqdi/chiqmadi, yangi/yo'qotilgan
+  '/api/driver-activity': (q) => {
+    const inactiveThresholdDays = parseInt(q.get('inactive') ?? '7', 10);
+    const newDriverDays = parseInt(q.get('newWindow') ?? '7', 10);
+    return withCache(`driver-activity:${inactiveThresholdDays}:${newDriverDays}`, 5 * 60_000, () => {
+    const todayStr = today();
+    const weekAgo = daysAgo(7);
+    // Asosiy aggregate (region MAX bilan birga)
+    const baseItems = db
+      .prepare(
+        `SELECT
+           callsign,
+           MAX(driver_name) as driver_name,
+           MAX(region) as region,
+           MIN(date) as first_date,
+           MAX(date) as last_date,
+           COUNT(*) as total_orders,
+           SUM(CASE WHEN status='finish' THEN 1 ELSE 0 END) as completed,
+           SUM(CASE WHEN status='order_cancelled' THEN 1 ELSE 0 END) as cancelled,
+           SUM(CASE WHEN date = ? THEN 1 ELSE 0 END) as today_orders,
+           SUM(CASE WHEN date >= ? THEN 1 ELSE 0 END) as week_orders,
+           COALESCE(SUM(amount), 0) as total_amount
+         FROM orders WHERE callsign != ''
+         GROUP BY callsign
+         ORDER BY total_orders DESC LIMIT 5000`,
+      )
+      .all(todayStr, weekAgo) as Array<Record<string, unknown>>;
+
+    if (baseItems.length === 0) return { items: [], inactiveThresholdDays, newDriverDays };
+
+    // drivers + blocks — kichik table'lar, hammasini olamiz
+    const driverRows = db
+      .prepare(`SELECT callsign, NULLIF(lock_kind, '') as lock_kind FROM drivers WHERE callsign != ''`)
+      .all() as Array<{ callsign: string; lock_kind: string | null }>;
+    const driverMap = new Map(driverRows.map((r) => [r.callsign, r.lock_kind]));
+
+    const blockRows = db
+      .prepare(`SELECT DISTINCT callsign FROM driver_blocks WHERE applied=1`)
+      .all() as Array<{ callsign: string }>;
+    const blockSet = new Set(blockRows.map((r) => r.callsign));
+
+    const todayMs = Date.now() + 5 * 3600 * 1000;
+    const items = baseItems.map((b) => {
+      const cs = b.callsign as string;
+      const lockKind = driverMap.get(cs) ?? null;
+      const lastDate = b.last_date as string;
+      const firstDate = b.first_date as string;
+      const lastMs = lastDate ? new Date(lastDate + 'T00:00:00Z').getTime() : 0;
+      const firstMs = firstDate ? new Date(firstDate + 'T00:00:00Z').getTime() : 0;
+      const daysInactive = lastMs ? Math.floor((todayMs - lastMs) / 86400000) : 999;
+      const daysSinceFirst = firstMs ? Math.floor((todayMs - firstMs) / 86400000) : 0;
+      const todayOrders = b.today_orders as number;
+      const weekOrders = b.week_orders as number;
+      let activity_status: string;
+      if (todayOrders > 0) activity_status = 'aktiv_bugun';
+      else if (weekOrders > 0) activity_status = 'aktiv_hafta';
+      else if (daysInactive >= inactiveThresholdDays) activity_status = 'yoqotilgan';
+      else activity_status = 'kutmoqda';
+      return {
+        ...b,
+        days_inactive: daysInactive,
+        days_since_first: daysSinceFirst,
+        is_site_locked: lockKind ? 1 : null,
+        lock_kind: lockKind,
+        our_blocked: blockSet.has(cs) ? 1 : null,
+        activity_status,
+        is_new: daysSinceFirst <= newDriverDays ? 1 : 0,
+      };
+    });
+    return { items, inactiveThresholdDays, newDriverDays };
+    });
+  },
+
+  // Haydovchilar retention summary — yangi/yo'qotilgan/aktiv
+  '/api/driver-retention': (q) => {
+    const newWindow = parseInt(q.get('newWindow') ?? '7', 10);
+    const inactiveDays = parseInt(q.get('inactive') ?? '7', 10);
+    return withCache(`driver-retention:${newWindow}:${inactiveDays}`, 5 * 60_000, () => {
+    const todayStr = today();
+    const newCutoff = daysAgo(newWindow);
+    const inactiveCutoff = daysAgo(inactiveDays);
+    const summary = db
+      .prepare(
+        `WITH ds AS (
+           SELECT
+             callsign,
+             MIN(date) as first_date,
+             MAX(date) as last_date,
+             SUM(CASE WHEN date = ? THEN 1 ELSE 0 END) as today_o
+           FROM orders WHERE callsign != ''
+           GROUP BY callsign
+         )
+         SELECT
+           COUNT(*) as total_drivers,
+           SUM(CASE WHEN today_o > 0 THEN 1 ELSE 0 END) as active_today,
+           SUM(CASE WHEN today_o = 0 AND last_date >= ? THEN 1 ELSE 0 END) as active_week,
+           SUM(CASE WHEN last_date < ? THEN 1 ELSE 0 END) as churned,
+           SUM(CASE WHEN first_date >= ? THEN 1 ELSE 0 END) as new_drivers
+         FROM ds`,
+      )
+      .get(todayStr, inactiveCutoff, inactiveCutoff, newCutoff);
+
+    // Yangi haydovchilar (region subquery'siz)
+    const newOnesBase = db
+      .prepare(
+        `SELECT callsign, MAX(driver_name) as driver_name, MIN(date) as first_date,
+                COUNT(*) as orders, COALESCE(SUM(amount), 0) as total_amount,
+                MAX(region) as region
+         FROM orders WHERE callsign != ''
+         GROUP BY callsign
+         HAVING MIN(date) >= ?
+         ORDER BY first_date DESC LIMIT 100`,
+      )
+      .all(newCutoff);
+
+    // Yo'qotilgan haydovchilar
+    const todayMs = Date.now() + 5 * 3600 * 1000;
+    const churnedBase = db
+      .prepare(
+        `SELECT callsign, MAX(driver_name) as driver_name, MAX(date) as last_date,
+                COUNT(*) as past_orders, COALESCE(SUM(amount), 0) as past_amount,
+                MAX(region) as region
+         FROM orders WHERE callsign != ''
+         GROUP BY callsign
+         HAVING MAX(date) < ? AND COUNT(*) >= 5
+         ORDER BY past_orders DESC LIMIT 200`,
+      )
+      .all(inactiveCutoff) as Array<Record<string, unknown>>;
+
+    // lock_kind ni alohida olib qo'shamiz (faqat churned uchun, 200 ta)
+    if (churnedBase.length > 0) {
+      const cs = churnedBase.map((r) => r.callsign as string);
+      const ph = cs.map(() => '?').join(',');
+      const lockRows = db
+        .prepare(`SELECT callsign, NULLIF(lock_kind, '') as lock_kind FROM drivers WHERE callsign IN (${ph})`)
+        .all(...cs) as Array<{ callsign: string; lock_kind: string | null }>;
+      const lockMap = new Map(lockRows.map((r) => [r.callsign, r.lock_kind]));
+      for (const r of churnedBase) {
+        const lastDate = r.last_date as string;
+        const lastMs = lastDate ? new Date(lastDate + 'T00:00:00Z').getTime() : todayMs;
+        r.days_inactive = Math.floor((todayMs - lastMs) / 86400000);
+        r.lock_kind = lockMap.get(r.callsign as string) ?? null;
+      }
+    }
+
+    return { summary, newOnes: newOnesBase, churnedOnes: churnedBase, newWindow, inactiveDays };
+    });
+  },
+
+  // Mijoz to'liq tarixi
+  '/api/client': (q) => {
+    let phone = (q.get('phone') ?? '').trim();
+    // URL'da `+` → ` ` (space) bo'lib qoladi — qaytaramiz
+    if (phone.startsWith(' ')) phone = '+' + phone.slice(1);
+    if (/^\d{12}$/.test(phone)) phone = '+' + phone;
+    if (!phone) return { error: 'phone kerak' };
+    const summary = db
+      .prepare(
+        `SELECT
+           COUNT(*) as orders_total,
+           SUM(CASE WHEN status='finish' THEN 1 ELSE 0 END) as completed,
+           SUM(CASE WHEN status='order_cancelled' THEN 1 ELSE 0 END) as cancelled,
+           SUM(CASE WHEN cancel_kind='Клиент не берет трубку' THEN 1 ELSE 0 END) as no_answer,
+           SUM(CASE WHEN cancel_kind='Клиент уже уехал' THEN 1 ELSE 0 END) as already_left,
+           COUNT(DISTINCT driver_name) as drivers_used,
+           COALESCE(SUM(amount), 0) as total_spent,
+           COALESCE(AVG(amount), 0) as avg_check,
+           MIN(date) as first_order,
+           MAX(date) as last_order
+         FROM orders WHERE client_phone = ?`,
+      )
+      .get(phone) as Record<string, unknown>;
+
+    const byRegion = db
+      .prepare(
+        `SELECT region, COUNT(*) as cnt FROM orders
+         WHERE client_phone = ? AND region != '' AND region IS NOT NULL
+         GROUP BY region ORDER BY cnt DESC LIMIT 10`,
+      )
+      .all(phone);
+
+    const byDriver = db
+      .prepare(
+        `SELECT callsign, driver_name, COUNT(*) as cnt FROM orders
+         WHERE client_phone = ? GROUP BY callsign, driver_name
+         ORDER BY cnt DESC LIMIT 10`,
+      )
+      .all(phone);
+
+    const recentOrders = db
+      .prepare(
+        `SELECT order_id, callsign, driver_name, region, date, time,
+                distance_km, amount, status, cancel_kind, address
+         FROM orders WHERE client_phone = ?
+         ORDER BY date DESC, time DESC LIMIT 100`,
+      )
+      .all(phone);
+
+    return { summary, byRegion, byDriver, recentOrders };
+  },
+
+  // Daromad bo'yicha top haydovchilar
+  '/api/top-earners': (q) => {
+    const days = parseInt(q.get('days') ?? '30', 10);
+    return withCache(`top-earners:${days}`, 5 * 60_000, () => {
+    const cutoff = daysAgo(days);
+    const cutoffIso = cutoff + 'T00:00:00';
+    // Asosiy aggregate (region aynan MAX bilan — kompozit index kifoyat qiladi)
+    const items = db
+      .prepare(
+        `SELECT
+           callsign,
+           MAX(driver_name) as driver_name,
+           MAX(region) as region,
+           COUNT(*) as orders,
+           SUM(CASE WHEN status='finish' THEN 1 ELSE 0 END) as completed,
+           SUM(CASE WHEN status='order_cancelled' THEN 1 ELSE 0 END) as cancelled,
+           COALESCE(SUM(amount), 0) as total_amount,
+           COALESCE(AVG(amount), 0) as avg_check,
+           COALESCE(SUM(distance_km), 0) as total_km
+         FROM orders
+         WHERE date >= ? AND callsign != ''
+         GROUP BY callsign
+         HAVING orders >= 3
+         ORDER BY total_amount DESC LIMIT 200`,
+      )
+      .all(cutoff) as Array<Record<string, unknown>>;
+
+    if (items.length === 0) return { items };
+
+    // Alerts — bitta query
+    const alertRows = db
+      .prepare(
+        `SELECT callsign, COUNT(*) as cnt FROM fraud_alerts
+         WHERE created_at >= ? AND callsign != ''
+         GROUP BY callsign`,
+      )
+      .all(cutoffIso) as Array<{ callsign: string; cnt: number }>;
+    const alertMap = new Map(alertRows.map((r) => [r.callsign, r.cnt]));
+
+    // Blocks (kichik table, hammasini olamiz)
+    const blockRows = db
+      .prepare(`SELECT DISTINCT callsign FROM driver_blocks WHERE applied = 1`)
+      .all() as Array<{ callsign: string }>;
+    const blockSet = new Set(blockRows.map((r) => r.callsign));
+
+    for (const it of items) {
+      const cs = it.callsign as string;
+      it.alerts = alertMap.get(cs) ?? 0;
+      it.is_blocked = blockSet.has(cs) ? 1 : null;
+    }
+    return { items };
+    });
+  },
+
+  // Mijoz blacklist tavsiyasi — bekorlar ko'p mijozlar
+  '/api/client-blacklist-recommend': (q) => {
+    const days = parseInt(q.get('days') ?? '30', 10);
+    return withCache(`client-blacklist:${days}`, 5 * 60_000, () => {
+    const items = db
+      .prepare(
+        `SELECT
+           client_phone,
+           COUNT(*) as orders_total,
+           SUM(CASE WHEN status='order_cancelled' THEN 1 ELSE 0 END) as cancelled,
+           SUM(CASE WHEN cancel_kind='Клиент не берет трубку' THEN 1 ELSE 0 END) as no_answer,
+           SUM(CASE WHEN cancel_kind='Клиент уже уехал' THEN 1 ELSE 0 END) as already_left,
+           SUM(CASE WHEN cancel_kind='По вине клиента' THEN 1 ELSE 0 END) as client_fault,
+           ROUND(100.0 * SUM(CASE WHEN status='order_cancelled' THEN 1 ELSE 0 END) / COUNT(*), 1) as cancel_rate,
+           MAX(region) as region,
+           MAX(date) as last_order
+         FROM orders
+         WHERE date >= ?
+           AND client_phone != '' AND client_phone IS NOT NULL
+         GROUP BY client_phone
+         HAVING (orders_total >= 5 AND cancel_rate >= 50) OR no_answer >= 3 OR already_left >= 3
+         ORDER BY cancelled DESC LIMIT 200`,
+      )
+      .all(daysAgo(days));
+    return { items };
+    });
+  },
+
+  // Mijoz retention — yangi/takror/yo'qotilgan
+  '/api/client-retention': (q) => {
+    const days = parseInt(q.get('days') ?? '30', 10);
+    return withCache(`client-retention:${days}`, 5 * 60_000, () => {
+    const cutoff = daysAgo(days);
+    const churnCutoff = daysAgo(14);
+
+    // Kunlik new vs returning
+    const daily = db
+      .prepare(
+        `WITH client_first AS (
+           SELECT client_phone, MIN(date) as first_date
+           FROM orders WHERE client_phone != ''
+           GROUP BY client_phone
+         )
+         SELECT
+           o.date as day,
+           COUNT(DISTINCT CASE WHEN cf.first_date = o.date THEN o.client_phone END) as new_clients,
+           COUNT(DISTINCT CASE WHEN cf.first_date < o.date THEN o.client_phone END) as returning_clients,
+           COUNT(DISTINCT o.client_phone) as total_clients
+         FROM orders o
+         JOIN client_first cf ON cf.client_phone = o.client_phone
+         WHERE o.date >= ? AND o.client_phone != ''
+         GROUP BY o.date
+         ORDER BY o.date DESC`,
+      )
+      .all(cutoff);
+
+    // Churned (yo'qotilgan) — 14+ kun zakaz qilmagan, ilgari 5+ zakaz qilgan
+    const churned = db
+      .prepare(
+        `SELECT
+           client_phone,
+           COUNT(*) as past_orders,
+           MAX(date) as last_order,
+           MAX(region) as region
+         FROM orders
+         WHERE client_phone != '' AND status='finish'
+         GROUP BY client_phone
+         HAVING past_orders >= 5 AND MAX(date) < ?
+         ORDER BY past_orders DESC LIMIT 200`,
+      )
+      .all(churnCutoff) as Array<Record<string, unknown>>;
+
+    const todayMs = Date.now() + 5 * 3600 * 1000;
+    for (const r of churned) {
+      const lastDate = r.last_order as string;
+      const lastMs = lastDate ? new Date(lastDate + 'T00:00:00Z').getTime() : todayMs;
+      r.days_since = Math.floor((todayMs - lastMs) / 86400000);
+    }
+
+    return { daily, churned };
+    });
+  },
+
+  // Mashhur yo'nalishlar — A → B (manzilning birinchi qismi)
+  '/api/popular-routes': (q) => {
+    const days = parseInt(q.get('days') ?? '7', 10);
+    return withCache(`popular-routes:${days}`, 5 * 60_000, () => {
+    // address: "Чиракчи, Катта Больница" — birinchi qism = hudud, ikkinchi qism = manzil
+    const items = db
+      .prepare(
+        `SELECT
+           region as from_region,
+           SUBSTR(address, INSTR(address, ',') + 2) as to_address,
+           COUNT(*) as count,
+           ROUND(AVG(distance_km), 2) as avg_km,
+           ROUND(AVG(amount)) as avg_amount,
+           COUNT(DISTINCT callsign) as drivers
+         FROM orders
+         WHERE date >= ?
+           AND region != '' AND address != '' AND INSTR(address, ',') > 0
+           AND status='finish'
+         GROUP BY from_region, to_address
+         HAVING count >= 5
+         ORDER BY count DESC LIMIT 100`,
+      )
+      .all(daysAgo(days));
+    return { items };
+    });
+  },
+
+  // Cancel breakdown — hudud × kind × soat
+  '/api/cancel-breakdown': (q) => {
+    const days = parseInt(q.get('days') ?? '30', 10);
+    return withCache(`cancel-breakdown:${days}`, 5 * 60_000, () => {
+    const cutoff = daysAgo(days);
+
+    // Avval kindlarini olamiz va pct'ni JS'da hisoblaymiz
+    const kindRows = db
+      .prepare(
+        `SELECT cancel_kind, COUNT(*) as cnt
+         FROM orders
+         WHERE cancel_kind IS NOT NULL AND date >= ?
+         GROUP BY cancel_kind ORDER BY cnt DESC`,
+      )
+      .all(cutoff) as Array<{ cancel_kind: string; cnt: number; pct?: number }>;
+    const totalCancel = kindRows.reduce((s, r) => s + r.cnt, 0);
+    for (const k of kindRows) {
+      k.pct = totalCancel > 0 ? Math.round((k.cnt / totalCancel) * 1000) / 10 : 0;
+    }
+
+    const byRegion = db
+      .prepare(
+        `SELECT region,
+                SUM(CASE WHEN cancel_kind='По желанию клиента' THEN 1 ELSE 0 END) as by_client,
+                SUM(CASE WHEN cancel_kind='Автоматически' THEN 1 ELSE 0 END) as auto,
+                SUM(CASE WHEN cancel_kind='Клиент уже уехал' THEN 1 ELSE 0 END) as already_left,
+                SUM(CASE WHEN cancel_kind='Клиент не берет трубку' THEN 1 ELSE 0 END) as no_answer,
+                SUM(CASE WHEN cancel_kind='По вине водителя' THEN 1 ELSE 0 END) as driver_fault,
+                SUM(CASE WHEN cancel_kind='По вине диспетчерской' THEN 1 ELSE 0 END) as dispatch_fault,
+                COUNT(*) as total
+         FROM orders
+         WHERE cancel_kind IS NOT NULL AND region != ''
+           AND date >= ?
+         GROUP BY region ORDER BY total DESC`,
+      )
+      .all(cutoff);
+
+    return { byKind: kindRows, byRegion };
+    });
+  },
+
+  // Hududlar bo'yicha — har bir hududda nechta haydovchi ishladi, nechta zakaz
+  '/api/region-stats': (q) => {
+    const days = parseInt(q.get('days') ?? '7', 10);
+    return withCache(`region-stats:${days}`, 3 * 60_000, () => {
+    const cutoff = daysAgo(days);
+    const cutoffIso = cutoff + 'T00:00:00';
+    // Avval region statistikalar (asosiy)
+    const items = db
+      .prepare(
+        `SELECT
+           region,
+           COUNT(*) as orders,
+           SUM(CASE WHEN status='finish' THEN 1 ELSE 0 END) as completed,
+           SUM(CASE WHEN status='order_cancelled' THEN 1 ELSE 0 END) as cancelled,
+           COUNT(DISTINCT callsign) as active_drivers,
+           COALESCE(SUM(amount), 0) as total_amount
+         FROM orders
+         WHERE date >= ?
+           AND region IS NOT NULL AND region != ''
+         GROUP BY region
+         ORDER BY orders DESC`,
+      )
+      .all(cutoff) as Array<Record<string, unknown>>;
+
+    // Alert count'ni alohida — bu kichik table, faqat 1 marta
+    const alertRows = db
+      .prepare(
+        `SELECT o.region, COUNT(DISTINCT a.id) as cnt
+         FROM fraud_alerts a JOIN orders o ON o.callsign = a.callsign
+         WHERE a.created_at >= ?
+         GROUP BY o.region`,
+      )
+      .all(cutoffIso) as Array<{ region: string; cnt: number }>;
+    const alertMap = new Map(alertRows.map((r) => [r.region, r.cnt]));
+    for (const item of items) {
+      item.alerts_count = alertMap.get(item.region as string) ?? 0;
+    }
+    return { items };
+    });
+  },
+
+  // Kun bo'yicha — har kuni nechta haydovchi ishladi, nechta zakaz
+  '/api/daily-stats': (q) => {
+    const days = parseInt(q.get('days') ?? '30', 10);
+    return withCache(`daily-stats:${days}`, 5 * 60_000, () => {
+    const items = db
+      .prepare(
+        `SELECT
+           date as day,
+           COUNT(*) as orders,
+           SUM(CASE WHEN status='finish' THEN 1 ELSE 0 END) as completed,
+           SUM(CASE WHEN status='order_cancelled' THEN 1 ELSE 0 END) as cancelled,
+           COUNT(DISTINCT callsign) as active_drivers,
+           COUNT(DISTINCT region) as regions,
+           COALESCE(SUM(amount), 0) as total_amount,
+           CAST(strftime('%w', date) AS INTEGER) as weekday
+         FROM orders
+         WHERE date >= date('now', '+5 hours', '-' || ? || ' days')
+           AND date IS NOT NULL AND date != ''
+         GROUP BY date
+         ORDER BY date DESC`,
+      )
+      .all(days);
+    return { items };
+    });
+  },
+
+  // Ertaga uchun bashorat — oxirgi 14 kunni hafta kuni bo'yicha weighted
+  '/api/forecast': () => {
+    const today = new Date();
+    const tomorrow = new Date(today.getTime() + 24 * 60 * 60 * 1000);
+    const tomorrowWeekday = tomorrow.getDay(); // 0=Yakshanba .. 6=Shanba
+    const tomorrowDateStr = tomorrow.toISOString().slice(0, 10);
+
+    // Oxirgi 28 kun ichida ertangi hafta kunidagi kunlar
+    const sameWeekdayDays = db
+      .prepare(
+        `SELECT date, COUNT(*) as orders, COUNT(DISTINCT callsign) as drivers
+         FROM orders
+         WHERE date >= date('now', '+5 hours', '-28 days') AND date < date('now', '+5 hours')
+           AND CAST(strftime('%w', date) AS INTEGER) = ?
+         GROUP BY date
+         ORDER BY date DESC
+         LIMIT 6`,
+      )
+      .all(tomorrowWeekday) as Array<{ date: string; orders: number; drivers: number }>;
+
+    // Oxirgi 7 kun (umumiy trend)
+    const last7 = db
+      .prepare(
+        `SELECT date, COUNT(*) as orders, COUNT(DISTINCT callsign) as drivers
+         FROM orders
+         WHERE date >= date('now', '+5 hours', '-7 days') AND date < date('now', '+5 hours')
+           AND date IS NOT NULL AND date != ''
+         GROUP BY date
+         ORDER BY date DESC`,
+      )
+      .all() as Array<{ date: string; orders: number; drivers: number }>;
+
+    const avgSameWeekday = sameWeekdayDays.length
+      ? Math.round(
+          sameWeekdayDays.reduce((s, r) => s + r.orders, 0) / sameWeekdayDays.length,
+        )
+      : 0;
+    const avgLast7 = last7.length
+      ? Math.round(last7.reduce((s, r) => s + r.orders, 0) / last7.length)
+      : 0;
+    const avgDriversSameWeekday = sameWeekdayDays.length
+      ? Math.round(
+          sameWeekdayDays.reduce((s, r) => s + r.drivers, 0) / sameWeekdayDays.length,
+        )
+      : 0;
+
+    // 60% hafta kuni o'rtachasi + 40% umumiy oxirgi 7 kun
+    const predictedOrders = Math.round(avgSameWeekday * 0.6 + avgLast7 * 0.4);
+    const predictedDrivers = avgDriversSameWeekday;
+
+    return {
+      tomorrow: tomorrowDateStr,
+      weekday: tomorrowWeekday,
+      weekdayName: ['Yakshanba', 'Dushanba', 'Seshanba', 'Chorshanba', 'Payshanba', 'Juma', 'Shanba'][tomorrowWeekday],
+      predictedOrders,
+      predictedDrivers,
+      basedOn: {
+        sameWeekdayDays,
+        last7,
+        avgSameWeekday,
+        avgLast7,
+      },
+    };
+  },
+
   '/api/violators': (q) => {
     const days = parseInt(q.get('days') ?? '7', 10);
+    return withCache(`violators:${days}`, 3 * 60_000, () => {
+    const cutoff = daysAgo(days);
+    const cutoffIso = cutoff + 'T00:00:00';
     const items = db
       .prepare(
         `SELECT
            a.callsign,
            MAX(a.driver_name) as driver_name,
-           (SELECT region FROM orders WHERE callsign = a.callsign AND region != '' ORDER BY id DESC LIMIT 1) as region,
            COUNT(*) as alert_count,
            SUM(a.fraud_score) as total_score,
            MAX(a.fraud_score) as max_score,
-           (SELECT COUNT(*) FROM orders o WHERE o.callsign = a.callsign AND date(o.scraped_at) >= date('now', '-' || ? || ' days')) as orders_count,
-           (SELECT COUNT(*) FROM orders o WHERE o.callsign = a.callsign AND status='order_cancelled' AND date(o.scraped_at) >= date('now', '-' || ? || ' days')) as cancelled_count,
-           GROUP_CONCAT(DISTINCT a.fraud_type) as fraud_types,
-           (SELECT 1 FROM driver_blocks db2 WHERE db2.callsign = a.callsign) as our_blocked,
-           (SELECT lock_kind FROM drivers d WHERE d.callsign = a.callsign) as site_locked,
-           (SELECT driver_id FROM drivers d WHERE d.callsign = a.callsign LIMIT 1) as driver_id,
-           (SELECT office_id FROM drivers d WHERE d.callsign = a.callsign LIMIT 1) as office_id
+           GROUP_CONCAT(DISTINCT a.fraud_type) as fraud_types
          FROM fraud_alerts a
-         WHERE a.callsign != '' AND date(a.created_at) >= date('now', '-' || ? || ' days')
+         WHERE a.callsign != '' AND a.created_at >= ?
          GROUP BY a.callsign
          ORDER BY total_score DESC LIMIT 200`,
       )
-      .all(days, days, days);
+      .all(cutoffIso) as Array<Record<string, unknown>>;
+
+    if (items.length === 0) return { items };
+    const callsigns = items.map((i) => i.callsign as string);
+    const ph = callsigns.map(() => '?').join(',');
+
+    // Orders count + region — aggregate'da MAX(region)
+    const orderRows = db
+      .prepare(
+        `SELECT callsign,
+                COUNT(*) as orders_count,
+                SUM(CASE WHEN status='order_cancelled' THEN 1 ELSE 0 END) as cancelled_count,
+                MAX(region) as region
+         FROM orders WHERE callsign IN (${ph}) AND date >= ?
+         GROUP BY callsign`,
+      )
+      .all(...callsigns, cutoff) as Array<{ callsign: string; orders_count: number; cancelled_count: number; region: string }>;
+    const orderMap = new Map(orderRows.map((r) => [r.callsign, r]));
+
+    // Drivers (kichik table — hammasi)
+    const driverRows = db
+      .prepare(`SELECT callsign, driver_id, office_id, NULLIF(lock_kind, '') as site_locked FROM drivers WHERE callsign != ''`)
+      .all() as Array<{ callsign: string; driver_id: string; office_id: string; site_locked: string | null }>;
+    const driverMap = new Map(driverRows.map((r) => [r.callsign, r]));
+
+    const blockRows = db
+      .prepare(`SELECT DISTINCT callsign FROM driver_blocks WHERE applied = 1`)
+      .all() as Array<{ callsign: string }>;
+    const blockSet = new Set(blockRows.map((r) => r.callsign));
+
+    for (const it of items) {
+      const cs = it.callsign as string;
+      const o = orderMap.get(cs);
+      const d = driverMap.get(cs);
+      it.orders_count = o?.orders_count ?? 0;
+      it.cancelled_count = o?.cancelled_count ?? 0;
+      it.region = o?.region ?? null;
+      it.site_locked = d?.site_locked ?? null;
+      it.driver_id = d?.driver_id ?? null;
+      it.office_id = d?.office_id ?? null;
+      it.our_blocked = blockSet.has(cs) ? 1 : null;
+    }
     return { items };
+    });
   },
 
   '/api/driver-violations': (q) => {
@@ -907,7 +1635,7 @@ const ROUTES: Record<string, (q: URLSearchParams) => unknown> = {
       .prepare(
         `SELECT id, name, base_url, username,
                 CASE WHEN length(password) > 0 THEN '***' ELSE '' END as password_mask,
-                is_active, note, created_at, updated_at
+                is_active, use_proxy, note, created_at, updated_at
          FROM site_credentials
          ORDER BY is_active DESC, id ASC`,
       )
@@ -934,7 +1662,7 @@ const ROUTES: Record<string, (q: URLSearchParams) => unknown> = {
     `).all(t) as { hour: string; c: number }[];
     const daily = db.prepare(`
       SELECT date, COUNT(*) as c FROM orders
-      WHERE date >= date('now', '-7 days') GROUP BY date ORDER BY date
+      WHERE date >= date('now', '+5 hours', '-7 days') GROUP BY date ORDER BY date
     `).all() as { date: string; c: number }[];
     const fraudTypeMap: Record<string, string> = {
       SOXTA_QISQA_MASOFA: 'Soxta qisqa masofa',
@@ -947,13 +1675,13 @@ const ROUTES: Record<string, (q: URLSearchParams) => unknown> = {
     };
     const fraudTypes = (db.prepare(`
       SELECT fraud_type as t, COUNT(*) as c FROM fraud_alerts
-      WHERE date(created_at) >= date('now', '-7 days')
+      WHERE date(created_at) >= date('now', '+5 hours', '-7 days')
       GROUP BY fraud_type ORDER BY c DESC
     `).all() as { t: string; c: number }[]).map((r) => ({ label: fraudTypeMap[r.t] ?? r.t, c: r.c }));
     const topBadDrivers = db.prepare(`
       SELECT callsign, driver_name, COUNT(*) as cnt, SUM(fraud_score) as total
       FROM fraud_alerts
-      WHERE date(created_at) >= date('now', '-7 days')
+      WHERE date(created_at) >= date('now', '+5 hours', '-7 days')
       GROUP BY callsign, driver_name
       ORDER BY total DESC LIMIT 10
     `).all();
@@ -979,7 +1707,8 @@ const MIME: Record<string, string> = {
 import type { BrowserSession } from './scraper/browser.js';
 import { createBrowserSession, closeBrowserSession, humanPause } from './scraper/browser.js';
 import { login } from './scraper/auth.js';
-import { getDrivers, lockDriver } from './scraper/drivers.js';
+import { getDrivers, lockDriver, unlockDriver } from './scraper/drivers.js';
+import { getOrderRoute, analyzeGpsSpeed } from './scraper/api.js';
 
 let blockSession: BrowserSession | null = null;
 let blockSessionLastUsed = 0;
@@ -1069,14 +1798,77 @@ async function blockDriverFast(callsign: string, kind: string, comment: string, 
   }
 }
 
-// ===== MONITOR CONTROLLER (dashboard'dan monitor'ni boshqarish) =====
-let monitorProc: ChildProcess | null = null;
+async function unblockDriverFast(callsign: string): Promise<{
+  ok: boolean;
+  driverId?: string;
+  officeId?: number;
+  driverName?: string;
+  error?: string;
+}> {
+  const session = await getOrCreateBlockSession();
+  try {
+    const found = await getDrivers(session.page, { query: callsign, limit: 5, includingDocuments: true } as never);
+    const items = found.state?.items ?? [];
+    if (items.length === 0) return { ok: false, error: `Haydovchi topilmadi: ${callsign}` };
+    const real = items[0]!.items?.[0];
+    if (!real) return { ok: false, error: `${callsign} items bo'sh` };
+    const result = await unlockDriver(session.page, {
+      driverId: real.driverId,
+      officeId: real.officeId,
+    });
+    const r = result as { status?: boolean; message?: string };
+    if (r.status === false) {
+      return { ok: false, error: `Sayt rad qildi: ${r.message ?? '?'}`, driverId: real.driverId, officeId: real.officeId };
+    }
+    blockSessionLastUsed = Date.now();
+    return {
+      ok: true,
+      driverId: real.driverId,
+      officeId: real.officeId,
+      driverName: `${real.lastName} ${real.firstName}`.trim(),
+    };
+  } catch (err) {
+    try { await closeBrowserSession(session); } catch { /* ignore */ }
+    blockSession = null;
+    return { ok: false, error: (err as Error).message };
+  }
+}
+
+// ===== MULTI-SITE MONITOR CONTROLLER =====
+// Har sayt uchun alohida child process (6 tagacha parallel)
+interface MonitorChild {
+  proc: ChildProcess;
+  siteId: number;
+  siteName: string;
+  baseUrl: string;
+  startedAt: number;
+}
+const monitors: Map<number, MonitorChild> = new Map();
 const MONITOR_LOG = resolve(process.cwd(), 'monitor.log');
-const MAX_LOG_LINES = 200;
+const MAX_LOG_LINES = 500;
+
+function logForSite(siteId: number, line: string): void {
+  appendLog(`[site#${siteId}] ${line}`);
+}
 
 function isMonitorRunning(): boolean {
-  if (!monitorProc) return false;
-  return monitorProc.pid != null && monitorProc.exitCode === null;
+  // Eski kod uchun: agar kamida bitta sayt aktiv ishlamoqda bo'lsa, true
+  for (const m of monitors.values()) {
+    if (m.proc.pid != null && m.proc.exitCode === null) return true;
+  }
+  return false;
+}
+
+// Eski kod uchun mos kelish — first running process
+let monitorProc: ChildProcess | null = null;
+function syncLegacyHandle(): void {
+  monitorProc = null;
+  for (const m of monitors.values()) {
+    if (m.proc.pid != null && m.proc.exitCode === null) {
+      monitorProc = m.proc;
+      return;
+    }
+  }
 }
 
 function appendLog(line: string): void {
@@ -1085,52 +1877,185 @@ function appendLog(line: string): void {
   } catch { /* ignore */ }
 }
 
-function startMonitor(): { ok: boolean; pid?: number; error?: string } {
-  if (isMonitorRunning()) {
-    return { ok: false, error: 'Monitor allaqachon ishlamoqda', pid: monitorProc!.pid };
+interface SiteRow {
+  id: number;
+  name: string;
+  base_url: string;
+  username: string;
+  password: string;
+  use_proxy?: number; // 1 = chisel tunnel orqali, 0 = to'g'ridan-to'g'ri (proxysiz)
+}
+
+function spawnMonitorForSite(site: SiteRow): { ok: boolean; pid?: number; error?: string } {
+  const existing = monitors.get(site.id);
+  if (existing && existing.proc.pid != null && existing.proc.exitCode === null) {
+    return { ok: false, error: `Site ${site.id} (${site.name}) allaqachon ishlamoqda`, pid: existing.proc.pid };
   }
+
+  // base_url normalizatsiya
+  let baseUrl = site.base_url.replace(/\/+$/, '');
+  baseUrl = baseUrl.replace(/\/management\/?$/, '');
+
+  // Har saytga alohida storage-state fayli
+  const storagePath = resolve(process.cwd(), `storage-state-site-${site.id}.json`);
+  // Eski (sayt almashgan) storage'ni o'chiramiz
+  const lastUrlFile = resolve(process.cwd(), `.site-${site.id}-last-url`);
   try {
-    writeFileSync(MONITOR_LOG, `\n=== MONITOR ${new Date().toISOString()} ===\n`);
-    const isWin = process.platform === 'win32';
-    // src/realtime.ts — cwd dan relative (bo'shliqli yo'l muammosini chetlash)
-    const cmd = isWin ? 'npx.cmd' : 'npx';
-    // shell:true bilan argumentlar joined bo'ladi, bo'shliqli yo'llar uchun quote kerak
-    const args = isWin ? ['tsx', '"src/realtime.ts"'] : ['tsx', 'src/realtime.ts'];
-    monitorProc = spawn(cmd, args, {
+    const lastUrl = existsSync(lastUrlFile) ? readFileSync(lastUrlFile, 'utf-8').trim() : '';
+    if (lastUrl !== baseUrl && existsSync(storagePath)) {
+      unlinkSync(storagePath);
+      logForSite(site.id, `SAYT URL o'zgardi: ${lastUrl} → ${baseUrl} | storage o'chirildi\n`);
+    }
+    writeFileSync(lastUrlFile, baseUrl);
+  } catch (err) {
+    logForSite(site.id, `last-url xato: ${(err as Error).message}\n`);
+  }
+
+  const isWin = process.platform === 'win32';
+  const cmd = isWin ? 'npx.cmd' : 'npx';
+  const args = isWin ? ['tsx', '"src/realtime.ts"'] : ['tsx', 'src/realtime.ts'];
+
+  const env: Record<string, string> = {
+    ...process.env,
+    ROYALTAXI_BASE_URL: baseUrl,
+    ROYALTAXI_USERNAME: site.username,
+    ROYALTAXI_PASSWORD: site.password,
+    STORAGE_STATE_PATH: storagePath,
+    SITE_ID: String(site.id),
+    SITE_NAME: site.name,
+    NODE_ENV: process.env.NODE_ENV ?? 'production',
+  };
+  // Agar sayt to'g'ridan-to'g'ri ishlasa (use_proxy=0), tunelni o'chiramiz
+  if (site.use_proxy === 0) {
+    env.PROXY_URL = ''; // bo'sh = proxy yo'q
+    logForSite(site.id, `🌐 PROXY YO'Q — to'g'ridan-to'g'ri (tezroq)\n`);
+  } else {
+    // use_proxy=1 (TUNEL) — PROXY_URL dashboard env'dan meros bo'ladi
+    const inheritedProxy = process.env.PROXY_URL ?? '';
+    if (!inheritedProxy) {
+      logForSite(
+        site.id,
+        `⚠️  TUNEL TANLANGAN, lekin dashboard'da PROXY_URL .env'da yo'q!\n` +
+        `    Bu site (${site.name}) chisel tunnel'siz ishga tushadi.\n` +
+        `    Iltimos dashboard ishga tushgan terminalda PROXY_URL=socks5://127.0.0.1:1080 sozlang.\n`,
+      );
+    } else {
+      logForSite(site.id, `🚇 TUNEL meros olindi: ${inheritedProxy.replace(/\/\/[^@]*@/, '//***@')}\n`);
+    }
+  }
+
+  logForSite(site.id, `START: ${site.name} | ${baseUrl} | user=${site.username} | proxy=${site.use_proxy === 0 ? 'NO' : (process.env.PROXY_URL || 'PROXY_URL YO\'Q!')}\n`);
+
+  let proc: ChildProcess;
+  try {
+    proc = spawn(cmd, args, {
       cwd: process.cwd(),
-      env: { ...process.env, NODE_ENV: process.env.NODE_ENV ?? 'production' },
+      env,
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: false,
-      shell: isWin, // .cmd uchun zarur
+      shell: isWin,
       windowsHide: false,
     });
-    monitorProc.stdout?.on('data', (b: Buffer) => appendLog(b.toString()));
-    monitorProc.stderr?.on('data', (b: Buffer) => appendLog(b.toString()));
-    monitorProc.on('error', (err) => {
-      appendLog(`\n=== SPAWN ERROR: ${err.message} ===\n`);
-      monitorProc = null;
-    });
-    monitorProc.on('exit', (code) => {
-      appendLog(`\n=== MONITOR EXITED code=${code} at ${new Date().toISOString()} ===\n`);
-      monitorProc = null;
-    });
-    return { ok: true, pid: monitorProc.pid };
   } catch (err) {
-    monitorProc = null;
     return { ok: false, error: (err as Error).message };
+  }
+
+  proc.stdout?.on('data', (b: Buffer) => logForSite(site.id, b.toString()));
+  proc.stderr?.on('data', (b: Buffer) => logForSite(site.id, b.toString()));
+  proc.on('error', (err) => {
+    logForSite(site.id, `SPAWN ERROR: ${err.message}\n`);
+    monitors.delete(site.id);
+    syncLegacyHandle();
+  });
+  proc.on('exit', (code) => {
+    logForSite(site.id, `EXIT code=${code}\n`);
+    monitors.delete(site.id);
+    syncLegacyHandle();
+  });
+
+  monitors.set(site.id, {
+    proc,
+    siteId: site.id,
+    siteName: site.name,
+    baseUrl,
+    startedAt: Date.now(),
+  });
+  syncLegacyHandle();
+  return { ok: true, pid: proc.pid };
+}
+
+function startMonitor(): { ok: boolean; started: Array<{ id: number; name: string; pid?: number }>; skipped: Array<{ id: number; name: string; reason: string }>; error?: string } {
+  try {
+    if (monitors.size === 0) {
+      writeFileSync(MONITOR_LOG, `\n=== MULTI-MONITOR START ${new Date().toISOString()} ===\n`);
+    }
+
+    const activeSites = db
+      .prepare(
+        `SELECT id, name, base_url, username, password, use_proxy
+         FROM site_credentials WHERE is_active = 1 ORDER BY id LIMIT 6`,
+      )
+      .all() as SiteRow[];
+
+    if (activeSites.length === 0) {
+      // .env'dagi default sayt — fallback
+      const fallback: SiteRow = {
+        id: 0,
+        name: '(.env)',
+        base_url: process.env.ROYALTAXI_BASE_URL ?? '',
+        username: process.env.ROYALTAXI_USERNAME ?? '',
+        password: process.env.ROYALTAXI_PASSWORD ?? '',
+      };
+      const r = spawnMonitorForSite(fallback);
+      return { ok: r.ok, started: r.ok ? [{ id: 0, name: '(.env)', pid: r.pid }] : [], skipped: [], error: r.error };
+    }
+
+    const started: Array<{ id: number; name: string; pid?: number }> = [];
+    const skipped: Array<{ id: number; name: string; reason: string }> = [];
+    for (const s of activeSites) {
+      const r = spawnMonitorForSite(s);
+      if (r.ok) started.push({ id: s.id, name: s.name, pid: r.pid });
+      else skipped.push({ id: s.id, name: s.name, reason: r.error ?? 'unknown' });
+    }
+    return { ok: started.length > 0, started, skipped };
+  } catch (err) {
+    return { ok: false, started: [], skipped: [], error: (err as Error).message };
   }
 }
 
-function stopMonitor(): { ok: boolean; error?: string } {
-  if (!isMonitorRunning()) {
-    return { ok: false, error: 'Monitor allaqachon to\'xtagan' };
+function stopMonitor(): { ok: boolean; stopped: number; error?: string } {
+  let stopped = 0;
+  try {
+    for (const m of monitors.values()) {
+      if (m.proc.pid != null && m.proc.exitCode === null) {
+        try {
+          if (process.platform === 'win32') {
+            spawn('taskkill', ['/F', '/T', '/PID', String(m.proc.pid)]);
+          } else {
+            m.proc.kill('SIGTERM');
+          }
+          stopped++;
+        } catch (err) {
+          logForSite(m.siteId, `STOP ERROR: ${(err as Error).message}\n`);
+        }
+      }
+    }
+    return { ok: stopped > 0, stopped };
+  } catch (err) {
+    return { ok: false, stopped, error: (err as Error).message };
+  }
+}
+
+function stopMonitorForSite(siteId: number): { ok: boolean; error?: string } {
+  const m = monitors.get(siteId);
+  if (!m || m.proc.exitCode !== null) {
+    return { ok: false, error: 'Sayt monitori ishlamayotgan' };
   }
   try {
     if (process.platform === 'win32') {
-      // Windows'da SIGINT ishlamaydi, kill kerak
-      spawn('taskkill', ['/F', '/T', '/PID', String(monitorProc!.pid)]);
+      spawn('taskkill', ['/F', '/T', '/PID', String(m.proc.pid)]);
     } else {
-      monitorProc!.kill('SIGTERM');
+      m.proc.kill('SIGTERM');
     }
     return { ok: true };
   } catch (err) {
@@ -1143,6 +2068,7 @@ function getMonitorStatus(): {
   pid: number | null;
   uptimeSec: number | null;
   lastLogLines: string[];
+  sites: Array<{ id: number; name: string; pid?: number; running: boolean; uptimeSec: number; baseUrl: string }>;
 } {
   let lastLines: string[] = [];
   try {
@@ -1152,11 +2078,20 @@ function getMonitorStatus(): {
       lastLines = all.slice(-MAX_LOG_LINES);
     }
   } catch { /* ignore */ }
+  const sites = Array.from(monitors.values()).map((m) => ({
+    id: m.siteId,
+    name: m.siteName,
+    pid: m.proc.pid,
+    running: m.proc.pid != null && m.proc.exitCode === null,
+    uptimeSec: Math.round((Date.now() - m.startedAt) / 1000),
+    baseUrl: m.baseUrl,
+  }));
   return {
     running: isMonitorRunning(),
     pid: monitorProc?.pid ?? null,
-    uptimeSec: null, // could add if we track startedAt
+    uptimeSec: null,
     lastLogLines: lastLines,
+    sites,
   };
 }
 
@@ -1314,11 +2249,152 @@ const server = createServer(async (req, res) => {
     return;
   }
   if (path === '/api/monitor/status') {
-    send(res, 200, getMonitorStatus());
+    const status = getMonitorStatus();
+    // Per-site monitor state — DB'dan
+    const siteStates = db
+      .prepare(
+        `SELECT s.id, s.name, s.is_active, s.base_url,
+                ms.last_tick_at, ms.tick_count, ms.site_total_today, ms.our_count_today,
+                ms.consecutive_errors, ms.last_error
+         FROM site_credentials s
+         LEFT JOIN site_monitor_state ms ON ms.site_id = s.id
+         ORDER BY s.is_active DESC, s.id`,
+      )
+      .all();
+    send(res, 200, { ...status, siteStates });
+    return;
+  }
+
+  // Bitta saytni qo'lda ishga tushirish/to'xtatish
+  const restartMatch = req.method === 'POST' && path.match(/^\/api\/monitor\/site\/(\d+)\/restart$/);
+  if (restartMatch) {
+    const siteId = parseInt(restartMatch[1]!, 10);
+    stopMonitorForSite(siteId);
+    const site = db
+      .prepare(`SELECT id, name, base_url, username, password, use_proxy FROM site_credentials WHERE id = ?`)
+      .get(siteId) as SiteRow | undefined;
+    if (!site) {
+      send(res, 404, { ok: false, error: 'Sayt topilmadi' });
+      return;
+    }
+    setTimeout(() => spawnMonitorForSite(site), 1000);
+    send(res, 200, { ok: true, siteId });
+    return;
+  }
+  const stopSiteMatch = req.method === 'POST' && path.match(/^\/api\/monitor\/site\/(\d+)\/stop$/);
+  if (stopSiteMatch) {
+    const siteId = parseInt(stopSiteMatch[1]!, 10);
+    send(res, 200, stopMonitorForSite(siteId));
     return;
   }
 
   // Saytlar (credentials) CRUD
+  // DELETE /api/telegram-users/:id — alohida (POST/PUT blokidan oldin)
+  if (req.method === 'DELETE' && path.match(/^\/api\/telegram-users\/\d+$/)) {
+    const id = parseInt(path.split('/')[3]!, 10);
+    const info = db.prepare(`SELECT chat_id, full_name FROM telegram_users WHERE id = ?`).get(id) as { chat_id: string; full_name: string } | undefined;
+    db.prepare(`DELETE FROM telegram_users WHERE id = ?`).run(id);
+    db.prepare(`INSERT INTO audit_log (action, target_type, target_id, actor, details) VALUES ('tg_user_delete', 'tg_user', ?, 'web', ?)`)
+      .run(String(id), info ? `${info.full_name} (${info.chat_id})` : '');
+    send(res, 200, { ok: true });
+    return;
+  }
+
+  // Telegram users CRUD (POST/PUT)
+  if (path.startsWith('/api/telegram-users') && req.method !== 'GET' && req.method !== 'DELETE') {
+    try {
+      const chunks: Buffer[] = [];
+      await new Promise<void>((resolve, reject) => {
+        req.on('data', (c) => chunks.push(c as Buffer));
+        req.on('end', () => resolve());
+        req.on('error', reject);
+      });
+      const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf-8') || '{}') : {};
+
+      // POST /api/telegram-users — yaratish
+      if (req.method === 'POST' && path === '/api/telegram-users') {
+        if (!body.chat_id) {
+          send(res, 400, { ok: false, error: 'chat_id kerak' });
+          return;
+        }
+        const regionsJson = body.regions
+          ? JSON.stringify(Array.isArray(body.regions) ? body.regions : [])
+          : null;
+        try {
+          const r = db.prepare(
+            `INSERT INTO telegram_users (chat_id, full_name, username, role, regions, receive_alerts, receive_daily_report, receive_no_orders_alert, is_active, note)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          ).run(
+            String(body.chat_id),
+            body.full_name ?? null,
+            body.username ?? null,
+            body.role ?? 'viewer',
+            regionsJson,
+            body.receive_alerts === false ? 0 : 1,
+            body.receive_daily_report === false ? 0 : 1,
+            body.receive_no_orders_alert === false ? 0 : 1,
+            body.is_active === false ? 0 : 1,
+            body.note ?? null,
+          );
+          db.prepare(`INSERT INTO audit_log (action, target_type, target_id, actor) VALUES ('tg_user_add', 'tg_user', ?, 'web')`).run(String(r.lastInsertRowid));
+          send(res, 200, { ok: true, id: r.lastInsertRowid });
+        } catch (err) {
+          const msg = (err as Error).message;
+          if (msg.includes('UNIQUE')) {
+            send(res, 400, { ok: false, error: 'Bu chat_id allaqachon ro\'yxatda' });
+          } else {
+            send(res, 500, { ok: false, error: msg });
+          }
+        }
+        return;
+      }
+
+      // PUT/POST /api/telegram-users/:id — yangilash
+      const editMatch = path.match(/^\/api\/telegram-users\/(\d+)$/);
+      if (editMatch && (req.method === 'PUT' || req.method === 'POST')) {
+        const id = parseInt(editMatch[1]!, 10);
+        const fields: string[] = [];
+        const values: unknown[] = [];
+        if (body.full_name !== undefined) { fields.push('full_name = ?'); values.push(body.full_name); }
+        if (body.username !== undefined) { fields.push('username = ?'); values.push(body.username); }
+        if (body.role !== undefined) { fields.push('role = ?'); values.push(body.role); }
+        if (body.regions !== undefined) {
+          fields.push('regions = ?');
+          values.push(body.regions ? JSON.stringify(Array.isArray(body.regions) ? body.regions : []) : null);
+        }
+        if (body.receive_alerts !== undefined) { fields.push('receive_alerts = ?'); values.push(body.receive_alerts ? 1 : 0); }
+        if (body.receive_daily_report !== undefined) { fields.push('receive_daily_report = ?'); values.push(body.receive_daily_report ? 1 : 0); }
+        if (body.receive_no_orders_alert !== undefined) { fields.push('receive_no_orders_alert = ?'); values.push(body.receive_no_orders_alert ? 1 : 0); }
+        if (body.is_active !== undefined) { fields.push('is_active = ?'); values.push(body.is_active ? 1 : 0); }
+        if (body.note !== undefined) { fields.push('note = ?'); values.push(body.note); }
+        if (fields.length === 0) { send(res, 400, { ok: false, error: 'Yangilanadigan maydon yo\'q' }); return; }
+        fields.push("updated_at = CURRENT_TIMESTAMP");
+        db.prepare(`UPDATE telegram_users SET ${fields.join(', ')} WHERE id = ?`).run(...values, id);
+        db.prepare(`INSERT INTO audit_log (action, target_type, target_id, actor) VALUES ('tg_user_update', 'tg_user', ?, 'web')`).run(String(id));
+        send(res, 200, { ok: true });
+        return;
+      }
+
+      // POST /api/telegram-users/:id/test — test xabari yuborish
+      const testMatch = path.match(/^\/api\/telegram-users\/(\d+)\/test$/);
+      if (testMatch && req.method === 'POST') {
+        const id = parseInt(testMatch[1]!, 10);
+        const user = db.prepare(`SELECT chat_id, full_name FROM telegram_users WHERE id = ?`).get(id) as { chat_id: string; full_name: string } | undefined;
+        if (!user) { send(res, 404, { ok: false, error: 'User topilmadi' }); return; }
+        const { sendToChat } = await import('./telegram.js');
+        const ok = await sendToChat(user.chat_id, `✅ <b>Test xabari</b>\n\nSalom ${user.full_name ?? ''}! Royaltaxi AI sizga muvaffaqiyatli ulandi.`);
+        send(res, ok ? 200 : 500, { ok });
+        return;
+      }
+
+      send(res, 404, { ok: false, error: 'Yo\'l noma\'lum' });
+      return;
+    } catch (err) {
+      send(res, 500, { ok: false, error: (err as Error).message });
+      return;
+    }
+  }
+
   if (req.method === 'POST' && path.startsWith('/api/sites')) {
     try {
       const chunks: Buffer[] = [];
@@ -1337,10 +2413,10 @@ const server = createServer(async (req, res) => {
         }
         const r = db
           .prepare(
-            `INSERT INTO site_credentials (name, base_url, username, password, note)
-             VALUES (?, ?, ?, ?, ?)`,
+            `INSERT INTO site_credentials (name, base_url, username, password, note, use_proxy)
+             VALUES (?, ?, ?, ?, ?, ?)`,
           )
-          .run(body.name, body.base_url, body.username, body.password, body.note ?? '');
+          .run(body.name, body.base_url, body.username, body.password, body.note ?? '', body.use_proxy === false ? 0 : 1);
         db.prepare(
           `INSERT INTO audit_log (action, target_type, target_id, actor) VALUES ('site_add', 'site', ?, 'web')`,
         ).run(String(r.lastInsertRowid));
@@ -1354,8 +2430,10 @@ const server = createServer(async (req, res) => {
         const id = parseInt(updateMatch[1]!, 10);
         const sets: string[] = [];
         const vals: unknown[] = [];
-        for (const f of ['name', 'base_url', 'username', 'password', 'note']) {
+        for (const f of ['name', 'base_url', 'username', 'password', 'note', 'use_proxy']) {
           if (body[f] !== undefined) {
+            // Parol uchun: bo'sh string bo'lsa, eskini saqlaymiz (yangilamaymiz)
+            if (f === 'password' && (body[f] === '' || body[f] === null)) continue;
             sets.push(`${f} = ?`);
             vals.push(body[f]);
           }
@@ -1373,19 +2451,33 @@ const server = createServer(async (req, res) => {
         return;
       }
 
-      // POST /api/sites/:id/activate
+      // POST /api/sites/:id/activate — TOGGLE (parallel monitoring uchun, 6 tagacha)
       const activateMatch = path.match(/^\/api\/sites\/(\d+)\/activate$/);
       if (activateMatch) {
         const id = parseInt(activateMatch[1]!, 10);
-        const tx = db.transaction(() => {
-          db.prepare(`UPDATE site_credentials SET is_active = 0`).run();
-          db.prepare(`UPDATE site_credentials SET is_active = 1 WHERE id = ?`).run(id);
-        });
-        tx();
+        const currentActive = db
+          .prepare(`SELECT COUNT(*) as c FROM site_credentials WHERE is_active = 1`)
+          .get() as { c: number };
+        const current = db
+          .prepare(`SELECT is_active FROM site_credentials WHERE id = ?`)
+          .get(id) as { is_active: number } | undefined;
+        if (!current) {
+          send(res, 404, { ok: false, error: 'Sayt topilmadi' });
+          return;
+        }
+        const newState = current.is_active === 1 ? 0 : 1;
+        // 6 ta saytdan ko'p aktiv qilishga ruxsat yo'q
+        if (newState === 1 && currentActive.c >= 6) {
+          send(res, 400, { ok: false, error: 'Maksimum 6 sayt parallel monitoring qila olinadi' });
+          return;
+        }
+        db.prepare(`UPDATE site_credentials SET is_active = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+          .run(newState, id);
         db.prepare(
-          `INSERT INTO audit_log (action, target_type, target_id, actor) VALUES ('site_activate', 'site', ?, 'web')`,
-        ).run(String(id));
-        send(res, 200, { ok: true });
+          `INSERT INTO audit_log (action, target_type, target_id, actor, details)
+           VALUES ('site_toggle', 'site', ?, 'web', ?)`,
+        ).run(String(id), `is_active=${newState}`);
+        send(res, 200, { ok: true, is_active: newState });
         return;
       }
 
@@ -1439,6 +2531,30 @@ const server = createServer(async (req, res) => {
           `INSERT OR REPLACE INTO driver_blocks (callsign, driver_name, reason, total_score, alert_count, applied)
            VALUES (?, ?, ?, 0, 0, 1)`,
         ).run(callsign, result.driverName ?? callsign, `MANUAL: ${reason}`);
+        // Drivers table'ni ham yangilash — site_locked ni ko'rsatish uchun
+        const lastSpace = (result.driverName ?? '').lastIndexOf(' ');
+        const lastName = lastSpace > 0 ? (result.driverName ?? '').slice(0, lastSpace) : (result.driverName ?? '');
+        const firstName = lastSpace > 0 ? (result.driverName ?? '').slice(lastSpace + 1) : '';
+        db.prepare(
+          `INSERT INTO drivers (driver_id, callsign, first_name, last_name, office_id, lock_kind, lock_comment)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(driver_id) DO UPDATE SET
+             callsign = excluded.callsign,
+             first_name = excluded.first_name,
+             last_name = excluded.last_name,
+             office_id = excluded.office_id,
+             lock_kind = excluded.lock_kind,
+             lock_comment = excluded.lock_comment,
+             scraped_at = CURRENT_TIMESTAMP`,
+        ).run(
+          result.driverId,
+          callsign,
+          firstName,
+          lastName,
+          String(result.officeId ?? ''),
+          kind,
+          reason,
+        );
         db.prepare(
           `INSERT INTO audit_log (action, target_type, target_id, actor, details)
            VALUES ('site_block_done', 'driver', ?, ?, ?)`,
@@ -1457,6 +2573,89 @@ const server = createServer(async (req, res) => {
         callsign,
         kind,
         reason,
+      });
+      return;
+    } catch (err) {
+      send(res, 500, { ok: false, error: (err as Error).message });
+      return;
+    }
+  }
+
+  // GPS route — bitta zakaz uchun GPS marshrut va tezlik tahlili
+  if (req.method === 'POST' && path === '/api/order-route') {
+    try {
+      const chunks: Buffer[] = [];
+      await new Promise<void>((resolve, reject) => {
+        req.on('data', (c) => chunks.push(c as Buffer));
+        req.on('end', () => resolve());
+        req.on('error', reject);
+      });
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf-8') || '{}');
+      const orderId = parseInt(body.orderId ?? '0', 10);
+      if (!orderId) {
+        send(res, 400, { ok: false, error: 'orderId kerak' });
+        return;
+      }
+      const session = await getOrCreateBlockSession();
+      const route = await getOrderRoute(session.page, orderId);
+      // Saytdan kelgan turli kalit nomlardan birini olamiz
+      const pts = (route.points ?? route.driverRoute ?? route.route ?? []) as Array<{
+        lat: number; lng: number; ts?: string; speed?: number;
+      }>;
+      const analysis = analyzeGpsSpeed(pts);
+      send(res, 200, { ok: true, orderId, analysis, pointCount: pts.length, points: pts.slice(0, 500) });
+      return;
+    } catch (err) {
+      send(res, 500, { ok: false, error: (err as Error).message });
+      return;
+    }
+  }
+
+  // Site-unblock: saytda haydovchini blokdan chiqarish
+  if (req.method === 'POST' && path === '/api/site-unblock') {
+    try {
+      const chunks: Buffer[] = [];
+      await new Promise<void>((resolve, reject) => {
+        req.on('data', (c) => chunks.push(c as Buffer));
+        req.on('end', () => resolve());
+        req.on('error', reject);
+      });
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf-8') || '{}');
+      const v = verifyToken(getAuthFromReq(req));
+      const callsign = (body.callsign ?? '').toString().trim();
+      if (!callsign) {
+        send(res, 400, { ok: false, error: 'callsign kerak' });
+        return;
+      }
+      db.prepare(
+        `INSERT INTO audit_log (action, target_type, target_id, actor)
+         VALUES ('site_unblock_request', 'driver', ?, ?)`,
+      ).run(callsign, v.username ?? 'web');
+
+      const result = await unblockDriverFast(callsign);
+
+      if (result.ok) {
+        db.prepare(`DELETE FROM driver_blocks WHERE callsign = ?`).run(callsign);
+        db.prepare(
+          `UPDATE drivers SET lock_kind = NULL, lock_comment = NULL, scraped_at = CURRENT_TIMESTAMP
+           WHERE callsign = ?`,
+        ).run(callsign);
+        db.prepare(
+          `INSERT INTO audit_log (action, target_type, target_id, actor)
+           VALUES ('site_unblock_done', 'driver', ?, ?)`,
+        ).run(callsign, v.username ?? 'web');
+      } else {
+        db.prepare(
+          `INSERT INTO audit_log (action, target_type, target_id, actor, details)
+           VALUES ('site_unblock_failed', 'driver', ?, ?, ?)`,
+        ).run(callsign, v.username ?? 'web', `error=${result.error ?? 'noma\'lum'}`);
+      }
+
+      send(res, result.ok ? 200 : 500, {
+        ok: result.ok,
+        error: result.error,
+        driver: result.driverName ?? callsign,
+        callsign,
       });
       return;
     } catch (err) {
@@ -1548,6 +2747,108 @@ const server = createServer(async (req, res) => {
     }
   }
 
+  // CSV export — har bir resurs uchun
+  if (path.startsWith('/api/export/')) {
+    try {
+      const resource = path.slice('/api/export/'.length);
+      const q = new URLSearchParams(req.url?.split('?')[1] ?? '');
+      const days = parseInt(q.get('days') ?? '30', 10);
+
+      let rows: Record<string, unknown>[] = [];
+      let filename = `${resource}.csv`;
+
+      if (resource === 'orders') {
+        rows = db
+          .prepare(
+            `SELECT order_id, callsign, driver_name, region, date, time, address, client_phone,
+                    distance_km, duration_sec, amount, status, cancel_kind, fraud_score, tariff, source
+             FROM orders WHERE date >= date('now', '+5 hours', '-' || ? || ' days')
+             ORDER BY date DESC, time DESC LIMIT 50000`,
+          )
+          .all(days) as Record<string, unknown>[];
+        filename = `orders-${days}d.csv`;
+      } else if (resource === 'alerts') {
+        rows = db
+          .prepare(
+            `SELECT a.id, a.order_id, a.callsign, a.driver_name, a.fraud_type, a.fraud_score,
+                    a.details, a.created_at, a.action_taken, o.region, o.distance_km, o.amount
+             FROM fraud_alerts a LEFT JOIN orders o ON o.order_id = a.order_id
+             WHERE date(a.created_at) >= date('now', '+5 hours', '-' || ? || ' days')
+             ORDER BY a.created_at DESC LIMIT 50000`,
+          )
+          .all(days) as Record<string, unknown>[];
+        filename = `alerts-${days}d.csv`;
+      } else if (resource === 'violators') {
+        rows = db
+          .prepare(
+            `SELECT a.callsign, MAX(a.driver_name) as driver_name,
+                    COUNT(*) as alert_count, SUM(a.fraud_score) as total_score,
+                    GROUP_CONCAT(DISTINCT a.fraud_type) as fraud_types
+             FROM fraud_alerts a WHERE date(a.created_at) >= date('now', '+5 hours', '-' || ? || ' days')
+             GROUP BY a.callsign ORDER BY total_score DESC LIMIT 10000`,
+          )
+          .all(days) as Record<string, unknown>[];
+        filename = `violators-${days}d.csv`;
+      } else if (resource === 'clients') {
+        rows = db
+          .prepare(
+            `SELECT client_phone, COUNT(*) as orders, COUNT(DISTINCT driver_name) as distinct_drivers,
+                    SUM(amount) as total_spent, MIN(date) as first_order, MAX(date) as last_order
+             FROM orders WHERE client_phone != '' AND date >= date('now', '+5 hours', '-' || ? || ' days')
+             GROUP BY client_phone HAVING orders >= 2 ORDER BY orders DESC LIMIT 10000`,
+          )
+          .all(days) as Record<string, unknown>[];
+        filename = `clients-${days}d.csv`;
+      } else if (resource === 'top-earners') {
+        rows = db
+          .prepare(
+            `SELECT callsign, MAX(driver_name) as driver_name, COUNT(*) as orders,
+                    SUM(amount) as total_amount, AVG(amount) as avg_check
+             FROM orders WHERE date >= date('now', '+5 hours', '-' || ? || ' days')
+             GROUP BY callsign HAVING orders >= 3 ORDER BY total_amount DESC LIMIT 10000`,
+          )
+          .all(days) as Record<string, unknown>[];
+        filename = `top-earners-${days}d.csv`;
+      } else {
+        send(res, 404, { error: 'noma\'lum resurs' });
+        return;
+      }
+
+      // CSV chiqarish
+      if (rows.length === 0) {
+        res.writeHead(200, {
+          'Content-Type': 'text/csv; charset=utf-8',
+          'Content-Disposition': `attachment; filename="${filename}"`,
+        });
+        res.end('');
+        return;
+      }
+      const headers = Object.keys(rows[0]!);
+      const escape = (v: unknown): string => {
+        if (v === null || v === undefined) return '';
+        const s = String(v);
+        if (s.includes(',') || s.includes('"') || s.includes('\n')) {
+          return `"${s.replace(/"/g, '""')}"`;
+        }
+        return s;
+      };
+      const csv = [
+        headers.join(','),
+        ...rows.map((r) => headers.map((h) => escape(r[h])).join(',')),
+      ].join('\n');
+      // BOM — Excel UTF-8 ni to'g'ri o'qishi uchun
+      res.writeHead(200, {
+        'Content-Type': 'text/csv; charset=utf-8',
+        'Content-Disposition': `attachment; filename="${filename}"`,
+      });
+      res.end('﻿' + csv);
+      return;
+    } catch (err) {
+      send(res, 500, { error: (err as Error).message });
+      return;
+    }
+  }
+
   // GET API endpoints
   const handler = ROUTES[path];
   if (handler) {
@@ -1590,10 +2891,147 @@ const server = createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   logger.info({ port: PORT }, `Dashboard ishga tushdi → http://localhost:${PORT}`);
+
+  // Monitor avtomatik ishga tushadi (env MONITOR_AUTOSTART=0 bilan o'chiriladi)
+  if (process.env.MONITOR_AUTOSTART !== '0') {
+    setTimeout(() => {
+      const r = startMonitor();
+      logger.info(r, 'Monitor avto-start');
+    }, 5000); // 5 sek kechikish — dashboard to'liq tayyor bo'lsin
+  }
+
+  // Orphan Chromium cleanup — har 10 daqiqada parent o'lgan chrome'larni o'ldiradi
+  setInterval(async () => {
+    try {
+      const { spawnSync } = await import('node:child_process');
+      const ps = spawnSync('ps', ['-eo', 'pid,ppid,cmd'], { encoding: 'utf8' });
+      if (!ps.stdout) return;
+      const lines = ps.stdout.split('\n');
+      const alivePids = new Set<number>();
+      for (const line of lines) {
+        const m = line.trim().match(/^(\d+)\s+/);
+        if (m) alivePids.add(parseInt(m[1]!, 10));
+      }
+      const orphans: number[] = [];
+      const allChromes: number[] = [];
+      for (const line of lines) {
+        if (!line.includes('chrome-headless-shell') && !line.includes('chromium')) continue;
+        const m = line.trim().match(/^(\d+)\s+(\d+)\s/);
+        if (!m) continue;
+        const pid = parseInt(m[1]!, 10);
+        const ppid = parseInt(m[2]!, 10);
+        allChromes.push(pid);
+        // ppid=1 (init) yoki ppid hayotda yo'q → orphan
+        if (ppid === 1 || !alivePids.has(ppid)) {
+          orphans.push(pid);
+        }
+      }
+      if (orphans.length > 0) {
+        logger.warn({ orphans: orphans.length, allChromes: allChromes.length }, '🧹 Orphan Chromium tozalanmoqda');
+        for (const pid of orphans) {
+          try { process.kill(pid, 'SIGKILL'); } catch { /* ignore */ }
+        }
+      }
+    } catch (err) {
+      logger.warn({ err: (err as Error).message }, 'Orphan cleanup xato');
+    }
+  }, 10 * 60 * 1000);
+
+  // Multi-site watchdog: har 2 daqiqa — har bir is_active=1 sayt monitor'i ishlayaptimi?
+  setInterval(() => {
+    if (process.env.MONITOR_AUTOSTART === '0') return;
+    try {
+      const activeSites = db
+        .prepare(
+          `SELECT id, name, base_url, username, password, use_proxy
+           FROM site_credentials WHERE is_active = 1 ORDER BY id LIMIT 6`,
+        )
+        .all() as SiteRow[];
+      const activeIds = new Set(activeSites.map((s) => s.id));
+
+      // Aktiv emas saytlar uchun ishlayotgan monitorlarni to'xtatamiz
+      for (const [siteId, m] of monitors.entries()) {
+        if (!activeIds.has(siteId) && m.proc.pid != null && m.proc.exitCode === null) {
+          logger.info({ siteId, name: m.siteName }, 'Sayt aktiv emas — monitor to\'xtatiladi');
+          stopMonitorForSite(siteId);
+        }
+      }
+
+      // Aktiv saytlar uchun ishlamayotgan monitorlarni ishga tushiramiz
+      for (const s of activeSites) {
+        const existing = monitors.get(s.id);
+        const isRunning = existing && existing.proc.pid != null && existing.proc.exitCode === null;
+        if (!isRunning) {
+          logger.warn({ siteId: s.id, name: s.name }, 'Monitor o\'chgan — qayta ishga tushiraman (watchdog)');
+          spawnMonitorForSite(s);
+        }
+      }
+
+      // Hech qaysi sayt aktiv emas va monitor ham yo'q bo'lsa — .env fallback
+      if (activeSites.length === 0 && monitors.size === 0) {
+        logger.info('Hech qanday aktiv sayt yo\'q — .env fallback ishga tushiraman');
+        startMonitor();
+      }
+    } catch (err) {
+      logger.error({ err: (err as Error).message }, 'Watchdog xato');
+    }
+  }, 2 * 60 * 1000);
 });
 
-process.on('SIGINT', () => {
-  logger.info('SIGINT — dashboard yopiladi');
+// Graceful shutdown — barcha child process'lar va Chromium browser'larni yopish
+async function gracefulShutdown(signal: string): Promise<void> {
+  logger.info({ signal }, 'Dashboard yopilmoqda — child process\'lar to\'xtatiladi');
+
+  // 1. Barcha monitor child process'lar uchun SIGTERM yuboramiz (Chromium ham yopiladi)
+  for (const [siteId, m] of monitors.entries()) {
+    if (m.proc.pid != null && m.proc.exitCode === null) {
+      logger.info({ siteId, pid: m.proc.pid }, 'Monitor SIGTERM');
+      try {
+        process.kill(-m.proc.pid, 'SIGTERM'); // process group ham (Chromium child'lar bilan)
+      } catch {
+        try { m.proc.kill('SIGTERM'); } catch { /* ignore */ }
+      }
+    }
+  }
+
+  // 2. Block session (dashboard ichidagi Playwright) yopish
+  if (blockSession) {
+    try {
+      await Promise.race([
+        closeBrowserSession(blockSession),
+        new Promise<void>((resolve) => setTimeout(resolve, 3000)),
+      ]);
+    } catch { /* ignore */ }
+  }
+
+  // 3. Child'lar to'liq o'chishini kutamiz (max 5 sek)
+  await new Promise<void>((resolve) => setTimeout(resolve, 3000));
+
+  // 4. Hali tirik bo'lgan child'lar uchun SIGKILL
+  for (const [siteId, m] of monitors.entries()) {
+    if (m.proc.pid != null && m.proc.exitCode === null) {
+      logger.warn({ siteId, pid: m.proc.pid }, 'Monitor SIGKILL (graceful muvaffaqiyatsiz)');
+      try {
+        process.kill(-m.proc.pid, 'SIGKILL');
+      } catch {
+        try { m.proc.kill('SIGKILL'); } catch { /* ignore */ }
+      }
+    }
+  }
+
+  // 5. Orphan Chromium + tsx monitor process'larni tozalash (ehtiyot chorasi)
+  try {
+    const { spawnSync } = await import('node:child_process');
+    // Chromium browser
+    spawnSync('pkill', ['-9', '-f', 'chrome-headless-shell'], { stdio: 'ignore' });
+    // Orphan tsx monitor jarayonlari (parent yo'qolgan)
+    spawnSync('pkill', ['-9', '-f', 'src/realtime.ts'], { stdio: 'ignore' });
+  } catch { /* ignore */ }
+
   db.close();
+  logger.info('Dashboard yopildi');
   process.exit(0);
-});
+}
+
+process.on('SIGINT', () => { void gracefulShutdown('SIGINT'); });
+process.on('SIGTERM', () => { void gracefulShutdown('SIGTERM'); });

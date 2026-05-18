@@ -106,12 +106,14 @@ export async function getOrders(
     periodEnd: string;
     statuses?: string[];
     officeIds?: number[] | null;
+    serviceIds?: number[] | null;
+    tariffIds?: number[] | null;
   },
 ): Promise<GetOrdersResponse> {
   return apiPost<GetOrdersResponse>(page, '/management/archive/get-orders', {
     officeIds: opts.officeIds ?? null,
-    serviceIds: null,
-    tariffIds: null,
+    serviceIds: opts.serviceIds ?? null,
+    tariffIds: opts.tariffIds ?? null,
     sources: [],
     paymentMethods: [],
     periodStart: opts.periodStart,
@@ -140,6 +142,105 @@ export async function getOrderDetails(
   return apiPost<OrderDetailsResponse>(page, '/management/archive/get-order-details', {
     orderId,
   });
+}
+
+/**
+ * Loginga ruxsat etilgan barcha shaharlar (offices) va parklarni (fleets) qaytaradi.
+ * Saytdagi "Подразделение" filteri shu endpointni chaqiradi.
+ * Default holatda getOrders'da officeIds=null bo'lsa, sayt foydalanuvchi saqlagan
+ * filtri (qaysi shaharlar belgilangan)dan foydalanadi — natijada ba'zi tumanlar
+ * (masalan Poytug') tushib qoladi. Buni oldini olish uchun bu yerdan barcha
+ * accessible officeId'larni olib, ularning hammasini getOrders ga uzatamiz.
+ */
+export interface OfficeWithFleets {
+  officeId: number;
+  name: string;
+  fleets: Array<{ fleetId: number; name: string }>;
+}
+export interface OfficesAndFleetsResponse {
+  offices: OfficeWithFleets[];
+}
+export async function getAccessibleOffices(page: Page): Promise<OfficesAndFleetsResponse> {
+  // /management/fleet/vehicles-map/get-fleets — login'ga ruxsat etilgan barcha
+  // (office, fleet) juftliklarini qaytaradi
+  return apiPost<OfficesAndFleetsResponse>(
+    page,
+    '/management/fleet/vehicles-map/get-fleets',
+    {},
+  );
+}
+
+export interface GpsPoint {
+  lat: number;
+  lng: number;
+  ts?: string;
+  speed?: number;
+}
+
+export interface OrderRouteResponse {
+  points?: GpsPoint[];
+  driverRoute?: GpsPoint[];
+  route?: GpsPoint[];
+  [k: string]: unknown;
+}
+
+export async function getOrderRoute(
+  page: Page,
+  orderId: number,
+): Promise<OrderRouteResponse> {
+  return apiPost<OrderRouteResponse>(page, '/management/archive/get-order-route', {
+    orderId,
+  });
+}
+
+/**
+ * GPS chiziqdan max va o'rtacha tezlikni hisoblash (km/soat).
+ * Haversine formula.
+ */
+export function analyzeGpsSpeed(points: GpsPoint[]): {
+  maxSpeed: number;
+  avgSpeed: number;
+  totalKm: number;
+  pointCount: number;
+} {
+  if (points.length < 2) return { maxSpeed: 0, avgSpeed: 0, totalKm: 0, pointCount: points.length };
+
+  let maxSpeed = 0;
+  let totalKm = 0;
+  let totalSec = 0;
+
+  const R = 6371; // Earth radius km
+  const toRad = (d: number): number => (d * Math.PI) / 180;
+
+  for (let i = 1; i < points.length; i++) {
+    const a = points[i - 1]!;
+    const b = points[i]!;
+    if (!a.lat || !b.lat) continue;
+    const dLat = toRad(b.lat - a.lat);
+    const dLng = toRad(b.lng - a.lng);
+    const lat1 = toRad(a.lat);
+    const lat2 = toRad(b.lat);
+    const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
+    const dist = 2 * R * Math.asin(Math.sqrt(h));
+    totalKm += dist;
+
+    const ta = a.ts ? new Date(a.ts).getTime() : 0;
+    const tb = b.ts ? new Date(b.ts).getTime() : 0;
+    if (ta > 0 && tb > 0 && tb > ta) {
+      const sec = (tb - ta) / 1000;
+      totalSec += sec;
+      const speed = (dist / sec) * 3600; // km/soat
+      if (speed > maxSpeed && speed < 300) maxSpeed = speed; // 300+ noise
+    }
+  }
+
+  const avgSpeed = totalSec > 0 ? (totalKm / totalSec) * 3600 : 0;
+  return {
+    maxSpeed: Math.round(maxSpeed * 10) / 10,
+    avgSpeed: Math.round(avgSpeed * 10) / 10,
+    totalKm: Math.round(totalKm * 100) / 100,
+    pointCount: points.length,
+  };
 }
 
 export interface DbOrderRow {
