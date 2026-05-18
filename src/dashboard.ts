@@ -3059,17 +3059,34 @@ server.listen(PORT, () => {
         if (m) alivePids.add(parseInt(m[1]!, 10));
       }
       const orphans: number[] = [];
+      const orphanMonitors: number[] = [];
       const allChromes: number[] = [];
+      const myPid = process.pid;
+      // Aktiv monitor PID'lar — bularni ham orphan deb hisoblamaymiz
+      const ownedMonitorPids = new Set<number>();
+      for (const m of monitors.values()) {
+        if (m.proc.pid != null) ownedMonitorPids.add(m.proc.pid);
+      }
       for (const line of lines) {
-        if (!line.includes('chrome-headless-shell') && !line.includes('chromium')) continue;
         const m = line.trim().match(/^(\d+)\s+(\d+)\s/);
         if (!m) continue;
         const pid = parseInt(m[1]!, 10);
         const ppid = parseInt(m[2]!, 10);
-        allChromes.push(pid);
-        // ppid=1 (init) yoki ppid hayotda yo'q → orphan
-        if (ppid === 1 || !alivePids.has(ppid)) {
-          orphans.push(pid);
+
+        // Orphan Chromium (parent o'lgan)
+        if (line.includes('chrome-headless-shell') || line.includes('chromium')) {
+          allChromes.push(pid);
+          if (ppid === 1 || !alivePids.has(ppid)) {
+            orphans.push(pid);
+          }
+        }
+
+        // Orphan tsx realtime.ts — biz spawn qilmagan va parent init (1)
+        // Bu eski dashboard restart'larida qolgan zombie monitorlar
+        if (line.includes('src/realtime.ts') && pid !== myPid) {
+          if (ppid === 1 && !ownedMonitorPids.has(pid)) {
+            orphanMonitors.push(pid);
+          }
         }
       }
       if (orphans.length > 0) {
@@ -3078,10 +3095,19 @@ server.listen(PORT, () => {
           try { process.kill(pid, 'SIGKILL'); } catch { /* ignore */ }
         }
       }
+      if (orphanMonitors.length > 0) {
+        logger.warn(
+          { count: orphanMonitors.length, pids: orphanMonitors.slice(0, 10) },
+          '🧹 Orphan monitor process\'lar tozalanmoqda (eski dashboard restartdan qolgan)',
+        );
+        for (const pid of orphanMonitors) {
+          try { process.kill(pid, 'SIGKILL'); } catch { /* ignore */ }
+        }
+      }
     } catch (err) {
       logger.warn({ err: (err as Error).message }, 'Orphan cleanup xato');
     }
-  }, 10 * 60 * 1000);
+  }, 2 * 60 * 1000); // 10 daqiqa → 2 daqiqa (tezroq tozalash)
 
   // Multi-site watchdog: har 2 daqiqa — har bir is_active=1 sayt monitor'i ishlayaptimi?
   setInterval(() => {
