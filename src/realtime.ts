@@ -123,19 +123,30 @@ async function ensureAllSubdivisionsChecked(session: BrowserSession): Promise<vo
         function sleep(ms){return new Promise(function(r){setTimeout(r,ms);});}
 
         function findTrigger() {
-          // 1-darajali: matn aniq "Подразделение" bilan boshlanadi (qisqa elementlar)
-          var all = Array.from(document.querySelectorAll('button, [role="button"], .hv-filter, [class*="filter"], [class*="dropdown"], [class*="select"], label, span, div, a'));
-          for (var i=0; i<all.length; i++) {
-            var t = (all[i].textContent || '').trim();
-            if (t.length > 200) continue; // juda katta wrapper'lar — o'tkazib yuboramiz
-            if (/^Подразделени/i.test(t)) return all[i];
-            if (/^Subdivisi|^Hudud|^Подраздел/i.test(t)) return all[i];
+          // HiveTaxi UI: <label>Подразделение</label> + qardosh <div class="select-default">
+          // Avval label'ni topib, keyin uning parent ichidagi select dropdown'ni qaytaramiz.
+          var labels = Array.from(document.querySelectorAll('label'));
+          for (var i=0; i<labels.length; i++) {
+            var lblText = (labels[i].textContent || '').trim();
+            if (/^Подразделени/i.test(lblText)) {
+              // parent.col-3 ichidagi .select-default yoki .mselect-input
+              var parent = labels[i].parentElement;
+              if (parent) {
+                var dd = parent.querySelector('.select-default, .mselect-input, [class*="select"]');
+                if (dd) return dd;
+              }
+              // fallback: label dan keyingi sibling
+              var next = labels[i].nextElementSibling;
+              if (next) return next;
+              return labels[i];
+            }
           }
-          // 2-darajali: matn ichida "Подразделени" bor (qisqa elementlar)
-          for (var j=0; j<all.length; j++) {
-            var t2 = (all[j].textContent || '').trim();
-            if (t2.length > 100) continue;
-            if (/Подразделени/i.test(t2)) return all[j];
+          // Eski yondashuv — agar label topilmasa, kengroq qidirish
+          var all = Array.from(document.querySelectorAll('button, [role="button"], [class*="filter"], [class*="dropdown"], [class*="select"], span, div, a'));
+          for (var k=0; k<all.length; k++) {
+            var t = (all[k].textContent || '').trim();
+            if (t.length > 100) continue;
+            if (/^Подразделени/i.test(t)) return all[k];
           }
           return null;
         }
