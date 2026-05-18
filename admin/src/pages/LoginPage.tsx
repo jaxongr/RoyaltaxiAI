@@ -58,6 +58,7 @@ export default function LoginPage(): JSX.Element {
       const r = await api.post('/login', values);
       if (r.data.ok) {
         localStorage.setItem('auth_token', r.data.token);
+        localStorage.setItem('username', values.username);
         api.defaults.headers.common['Authorization'] = `Bearer ${r.data.token}`;
         message.success('Xush kelibsiz!');
         const from = (loc.state as { from?: string })?.from ?? '/';

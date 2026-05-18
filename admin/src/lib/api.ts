@@ -12,13 +12,20 @@ if (savedToken) {
 }
 
 // 401 — login sahifasiga yo'naltirish
+// 5xx — global xato logging (sahifa toast'lari ham ko'rsatadi)
 api.interceptors.response.use(
   (r) => r,
   (error) => {
-    if (error.response?.status === 401 && window.location.pathname !== '/login') {
+    const status = error.response?.status;
+    if (status === 401 && window.location.pathname !== '/login') {
       localStorage.removeItem('auth_token');
+      localStorage.removeItem('username');
       delete api.defaults.headers.common['Authorization'];
       window.location.href = '/login';
+    }
+    // 5xx xatolarni console'ga yozib qo'yamiz (debugging uchun)
+    if (status && status >= 500) {
+      console.error('[API 5xx]', error.config?.url, error.response?.data);
     }
     return Promise.reject(error);
   },

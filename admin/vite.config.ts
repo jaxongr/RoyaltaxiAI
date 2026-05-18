@@ -16,5 +16,16 @@ export default defineConfig({
   build: {
     outDir: '../dist-admin',
     emptyOutDir: true,
+    chunkSizeWarningLimit: 1000,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          // Vendor split — keshlanadi, sahifalar yangilanganda qayta yuklanmaydi
+          'react-vendor': ['react', 'react-dom', 'react-router-dom'],
+          'antd-core': ['antd', '@ant-design/icons'],
+          'query': ['@tanstack/react-query', 'axios'],
+        },
+      },
+    },
   },
 });
