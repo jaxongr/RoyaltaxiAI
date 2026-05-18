@@ -160,14 +160,61 @@ export interface OfficeWithFleets {
 export interface OfficesAndFleetsResponse {
   offices: OfficeWithFleets[];
 }
+async function apiGet<T>(page: Page, path: string): Promise<T> {
+  const result = await page.evaluate(async (url: string) => {
+    const csrfMeta = document.querySelector('meta[name="csrf-token"]');
+    const csrf = csrfMeta?.getAttribute('content') ?? '';
+    const xsrfCookie = document.cookie
+      .split(';')
+      .map((c) => c.trim())
+      .find((c) => c.startsWith('XSRF-TOKEN='));
+    const xsrf = xsrfCookie
+      ? decodeURIComponent(xsrfCookie.substring('XSRF-TOKEN='.length))
+      : '';
+    const resp = await fetch(url, {
+      method: 'GET',
+      credentials: 'include',
+      headers: {
+        'X-CSRF-TOKEN': csrf,
+        'X-XSRF-TOKEN': xsrf,
+        'X-API-Request': 'true',
+        'X-Requested-With': 'XMLHttpRequest',
+        Accept: 'application/json, text/plain, */*',
+      },
+    });
+    return { status: resp.status, body: await resp.text() };
+  }, `${config.ROYALTAXI_BASE_URL}${path}`);
+  if (result.status < 200 || result.status >= 300) {
+    throw new Error(`GET ${path} xato ${result.status}: ${result.body.slice(0, 200)}`);
+  }
+  return JSON.parse(result.body) as T;
+}
+
 export async function getAccessibleOffices(page: Page): Promise<OfficesAndFleetsResponse> {
-  // /management/fleet/vehicles-map/get-fleets — login'ga ruxsat etilgan barcha
-  // (office, fleet) juftliklarini qaytaradi
-  return apiPost<OfficesAndFleetsResponse>(
-    page,
-    '/management/fleet/vehicles-map/get-fleets',
-    {},
-  );
+  // HiveTaxi'da bir nechta endpoint office ro'yxatini qaytaradi — login'ning huquqlariga
+  // qarab birortasi javob beradi. Birinchi muvaffaqiyatli (bo'sh bo'lmagan) javobni
+  // ishlatamiz. POST bilan boshlaymiz, keyin GET fallbacklar.
+  const candidates: Array<{ method: 'POST' | 'GET'; path: string }> = [
+    { method: 'POST', path: '/management/fleet/vehicles-map/get-fleets' },
+    { method: 'GET',  path: '/management/fleet/plans/fleets' },
+    { method: 'GET',  path: '/management/fleet/cars/fleets' },
+    { method: 'GET',  path: '/management/fleet/settings/fleets' },
+    { method: 'GET',  path: '/management/fleet/options/fleets' },
+  ];
+
+  for (const c of candidates) {
+    try {
+      const resp = c.method === 'POST'
+        ? await apiPost<OfficesAndFleetsResponse>(page, c.path, {})
+        : await apiGet<OfficesAndFleetsResponse>(page, c.path);
+      if (resp?.offices && resp.offices.length > 0) {
+        return resp;
+      }
+    } catch {
+      // shu endpoint javob bermadi — keyingisiga o'tamiz
+    }
+  }
+  return { offices: [] };
 }
 
 export interface GpsPoint {
