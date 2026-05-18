@@ -204,13 +204,19 @@ async function ensureAllSubdivisionsChecked(session: BrowserSession): Promise<vo
         }
 
         // 1) Avval "Выбрать все" (Select All) elementini topamiz
+        // ANIQ MATCH: textContent uzunligi 30 belgidan kichik bo'lsin
+        // ("Выбрать все" 12 belgi — wrapper div'lar emas, faqat leaf element)
         var selectAllEl = null;
-        var allItems = Array.from(document.querySelectorAll('.item-text, .checkbox_unchecked, .checkbox_checked, [class*="item"]'));
-        for (var sa=0; sa<allItems.length; sa++) {
-          var txt = (allItems[sa].textContent || '').trim();
-          if (/^(Выбрать все|Select all|Hammasini)/i.test(txt)) {
-            // ITEM-TEXT bo'lsa, uning parent container'ini olamiz (clickable)
-            selectAllEl = allItems[sa].closest('.item-container, [class*="item"], .sub-item') || allItems[sa];
+        var allLeafs = Array.from(document.querySelectorAll('.item-text, span, label, button, div'));
+        for (var sa=0; sa<allLeafs.length; sa++) {
+          var txt = (allLeafs[sa].textContent || '').trim();
+          if (txt.length > 30) continue; // wrapper'larni o'tkazib yuboramiz
+          if (/^(Выбрать все|Выбрать всё|Select all|Hammasini)$/i.test(txt)) {
+            // Leaf topildi — uning eng yaqin clickable parent'ini olamiz
+            var p = allLeafs[sa];
+            // Eng yaqin .sub-item, .item-container, yoki .item ancestor
+            var clickable = p.closest('.sub-item, .item-container, .item');
+            selectAllEl = clickable || p;
             break;
           }
         }
