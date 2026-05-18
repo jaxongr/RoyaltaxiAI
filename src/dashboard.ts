@@ -1975,9 +1975,16 @@ function spawnMonitorForSite(site: SiteRow): { ok: boolean; pid?: number; error?
     return { ok: false, error: `Site ${site.id} (${site.name}) allaqachon ishlamoqda`, pid: existing.proc.pid };
   }
 
-  // base_url normalizatsiya
-  let baseUrl = site.base_url.replace(/\/+$/, '');
-  baseUrl = baseUrl.replace(/\/management\/?$/, '');
+  // base_url normalizatsiya — har qanday path'ni olib tashlaymiz, faqat origin qoldiramiz
+  // (foydalanuvchi noto'g'ri /management/archive yoki shunga o'xshash qo'shsa ham ishlasin)
+  let baseUrl = site.base_url.trim().replace(/\/+$/, '');
+  try {
+    const u = new URL(baseUrl);
+    baseUrl = `${u.protocol}//${u.host}`;
+  } catch {
+    // URL parse xato bo'lsa, oldingi mantiq
+    baseUrl = baseUrl.replace(/\/management(\/.*)?$/, '');
+  }
 
   // Har saytga alohida storage-state fayli
   const storagePath = resolve(process.cwd(), `storage-state-site-${site.id}.json`);
