@@ -2212,11 +2212,103 @@ function verifyToken(token: string | null): { ok: boolean; username?: string } {
   return { ok: true, username };
 }
 
-function handleLogin(body: { username?: string; password?: string }): { ok: boolean; token?: string; error?: string } {
-  if (!body.username || !body.password) return { ok: false, error: 'Login va parol kerak' };
-  if (body.username !== config.ADMIN_USERNAME || body.password !== config.ADMIN_PASSWORD) {
+// Rate limiting — IP boyicha login attempts
+// 5 muvaffaqiyatsiz urinish / 15 min → 15 daqiqaga blok
+interface LoginAttempt { count: number; firstAt: number; lockedUntil: number; }
+const loginAttempts = new Map<string, LoginAttempt>();
+const MAX_FAILED_ATTEMPTS = 5;
+const ATTEMPT_WINDOW_MS = 15 * 60 * 1000;
+const LOCKOUT_MS = 15 * 60 * 1000;
+
+function checkRateLimit(ip: string): { allowed: boolean; retryAfter?: number } {
+  const now = Date.now();
+  const a = loginAttempts.get(ip);
+  if (!a) return { allowed: true };
+  if (a.lockedUntil > now) {
+    return { allowed: false, retryAfter: Math.ceil((a.lockedUntil - now) / 1000) };
+  }
+  // Window tugagan bo'lsa, reset
+  if (now - a.firstAt > ATTEMPT_WINDOW_MS) {
+    loginAttempts.delete(ip);
+    return { allowed: true };
+  }
+  return { allowed: true };
+}
+
+function recordFailedAttempt(ip: string): void {
+  const now = Date.now();
+  const a = loginAttempts.get(ip);
+  if (!a || now - a.firstAt > ATTEMPT_WINDOW_MS) {
+    loginAttempts.set(ip, { count: 1, firstAt: now, lockedUntil: 0 });
+    return;
+  }
+  a.count++;
+  if (a.count >= MAX_FAILED_ATTEMPTS) {
+    a.lockedUntil = now + LOCKOUT_MS;
+  }
+}
+
+// Eski entries'ni har 30 daqiqada tozalash
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, a] of loginAttempts.entries()) {
+    if (a.lockedUntil < now && now - a.firstAt > ATTEMPT_WINDOW_MS * 2) {
+      loginAttempts.delete(ip);
+    }
+  }
+}, 30 * 60 * 1000);
+
+function timingSafeStringCompare(a: string, b: string): boolean {
+  // Bir xil uzunlikka padding qilamiz — info leak'ni yo'q qilish uchun
+  const len = Math.max(a.length, b.length);
+  const bufA = Buffer.alloc(len, 0);
+  const bufB = Buffer.alloc(len, 0);
+  bufA.write(a);
+  bufB.write(b);
+  // Length bilan birga ham mismatch bo'lsa, false
+  return timingSafeEqual(bufA, bufB) && a.length === b.length;
+}
+
+function handleLogin(
+  body: { username?: string; password?: string },
+  ip: string,
+): { ok: boolean; token?: string; error?: string; lockedFor?: number } {
+  // Rate limit
+  const rl = checkRateLimit(ip);
+  if (!rl.allowed) {
+    return { ok: false, error: `Juda ko'p urinish. ${rl.retryAfter} sekund kuting`, lockedFor: rl.retryAfter };
+  }
+
+  if (!body.username || !body.password) {
+    recordFailedAttempt(ip);
+    return { ok: false, error: 'Login va parol kerak' };
+  }
+
+  // Timing-safe compare — usernameni ham, parolni ham
+  const usernameOk = timingSafeStringCompare(body.username, config.ADMIN_USERNAME);
+  const passwordOk = timingSafeStringCompare(body.password, config.ADMIN_PASSWORD);
+
+  if (!usernameOk || !passwordOk) {
+    recordFailedAttempt(ip);
+    // Audit log
+    try {
+      db.prepare(
+        `INSERT INTO audit_log (action, target_type, target_id, actor, details)
+         VALUES ('login_failed', 'auth', ?, ?, ?)`,
+      ).run(body.username, ip, JSON.stringify({ ip, time: new Date().toISOString() }));
+    } catch { /* ignore */ }
     return { ok: false, error: 'Login yoki parol noto\'g\'ri' };
   }
+
+  // Muvaffaqiyatli — attempt'larni tozalash
+  loginAttempts.delete(ip);
+  try {
+    db.prepare(
+      `INSERT INTO audit_log (action, target_type, target_id, actor)
+       VALUES ('login_success', 'auth', ?, ?)`,
+    ).run(body.username, ip);
+  } catch { /* ignore */ }
+
   return { ok: true, token: makeToken(body.username) };
 }
 
@@ -2311,21 +2403,36 @@ const server = createServer(async (req, res) => {
   // ===== AUTH endpoint =====
   if (req.method === 'POST' && path === '/api/login') {
     try {
+      // Body size limit — DoS himoya (max 4 KB)
       const chunks: Buffer[] = [];
-      await new Promise<void>((resolve, reject) => {
-        req.on('data', (c) => chunks.push(c as Buffer));
-        req.on('end', () => resolve());
-        req.on('error', reject);
+      let totalSize = 0;
+      const ok = await new Promise<boolean>((resolve) => {
+        req.on('data', (c) => {
+          totalSize += (c as Buffer).length;
+          if (totalSize > 4096) { req.destroy(); resolve(false); return; }
+          chunks.push(c as Buffer);
+        });
+        req.on('end', () => resolve(true));
+        req.on('error', () => resolve(false));
       });
+      if (!ok) { send(res, 413, { ok: false, error: 'Body juda katta' }); return; }
+
       const body = JSON.parse(Buffer.concat(chunks).toString('utf-8') || '{}');
-      const result = handleLogin(body);
+      // IP — X-Forwarded-For (nginx orqali) yoki socket
+      const ipHeader = (req.headers['x-forwarded-for'] as string | undefined) ?? '';
+      const ip = ipHeader.split(',')[0]!.trim() || req.socket.remoteAddress || 'unknown';
+      const result = handleLogin(body, ip);
       if (result.ok) {
+        const isHttps = (req.headers['x-forwarded-proto'] as string | undefined) === 'https';
+        const secure = isHttps ? '; Secure' : '';
         res.setHeader(
           'Set-Cookie',
-          `auth_token=${encodeURIComponent(result.token!)}; Path=/; Max-Age=${TOKEN_TTL_MS / 1000}; SameSite=Lax; HttpOnly`,
+          `auth_token=${encodeURIComponent(result.token!)}; Path=/; Max-Age=${TOKEN_TTL_MS / 1000}; SameSite=Lax; HttpOnly${secure}`,
         );
       }
-      send(res, result.ok ? 200 : 401, result);
+      // Failed login uchun 429 (Too Many) yoki 401
+      const status = result.lockedFor ? 429 : (result.ok ? 200 : 401);
+      send(res, status, result);
     } catch (err) {
       send(res, 500, { ok: false, error: (err as Error).message });
     }
