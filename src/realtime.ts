@@ -102,76 +102,92 @@ async function ensureAllSubdivisionsChecked(session: BrowserSession): Promise<vo
       await new Promise((r) => setTimeout(r, 2000));
     }
 
-    const result = await page.evaluate(async () => {
-      const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+    // tsx/esbuild __name workaround — browser context'ga shim qo'shamiz
+    await page.addInitScript(() => {
+      const g = globalThis as Record<string, unknown>;
+      if (typeof g.__name === 'undefined') {
+        g.__name = (fn: unknown): unknown => fn;
+      }
+    }).catch(() => undefined);
 
-      // 1) Filter trigger'ni topish — "Подразделение" matni bilan
-      const findTrigger = (): HTMLElement | null => {
-        const all = Array.from(document.querySelectorAll<HTMLElement>('button, [role="button"], .hv-filter, [class*="filter"], [class*="dropdown"], label, span, div'));
-        return all.find((el) => {
-          const t = (el.textContent ?? '').trim();
-          return /^Подразделение(\s|:|$)/i.test(t) || /^Subdivisi|^Hudud/i.test(t);
-        }) ?? null;
-      };
+    // Browser tomonida ishlaydigan funksiyani string sifatida uzatamiz —
+    // esbuild __name'larini avtomatik inject qilmasligi uchun.
+    const evalBody = `
+      (async function() {
+        var g = globalThis;
+        if (typeof g.__name === 'undefined') g.__name = function(fn){return fn;};
+        function sleep(ms){return new Promise(function(r){setTimeout(r,ms);});}
 
-      const trigger = findTrigger();
-      if (!trigger) return { ok: false, reason: 'trigger-not-found' };
-
-      // Ko'rinmasligi mumkin — scroll va click
-      trigger.scrollIntoView({ block: 'center' });
-      await sleep(300);
-      trigger.click();
-      await sleep(1500); // popup'ning ochilishini kutamiz
-
-      // 2) Popup ichida checkbox'larni topish
-      // HiveTaxi UI'ida odatda .hv-checkbox, .hv-select, input[type=checkbox]
-      const checkboxes = Array.from(document.querySelectorAll<HTMLInputElement>(
-        'input[type="checkbox"]'
-      )).filter((cb) => {
-        const r = cb.getBoundingClientRect();
-        return r.width > 0 && r.height > 0; // visible
-      });
-
-      // 3) Har bir belgilanmagan checkbox'ni bosamiz
-      let checkedCount = 0;
-      let alreadyChecked = 0;
-      const checkedNames: string[] = [];
-      for (const cb of checkboxes) {
-        if (!cb.checked) {
-          cb.click();
-          await sleep(100);
-          checkedCount++;
-          // Yonidagi label matnini olishga harakat qilamiz
-          const label = cb.closest('label')?.textContent?.trim()
-            ?? cb.nextElementSibling?.textContent?.trim()
-            ?? cb.parentElement?.textContent?.trim()
-            ?? '';
-          if (label) checkedNames.push(label.slice(0, 50));
-        } else {
-          alreadyChecked++;
+        function findTrigger() {
+          var all = Array.from(document.querySelectorAll('button, [role="button"], .hv-filter, [class*="filter"], [class*="dropdown"], label, span, div'));
+          for (var i=0; i<all.length; i++) {
+            var t = (all[i].textContent || '').trim();
+            if (/^Подразделение(\\s|:|$)/i.test(t) || /^Subdivisi|^Hudud/i.test(t)) return all[i];
+          }
+          return null;
         }
-      }
 
-      // 4) "Применить" / "Apply" tugmasini bosish (agar bor bo'lsa)
-      const applyBtn = Array.from(document.querySelectorAll<HTMLElement>('button, [role="button"]'))
-        .find((b) => /Применить|Apply|Saqlash|Saqla|OK$/i.test((b.textContent ?? '').trim()));
-      if (applyBtn) {
-        applyBtn.click();
-        await sleep(500);
-      } else {
-        // Popup'ni yopish uchun escape yoki tashqariga click
-        document.body.click();
+        var trigger = findTrigger();
+        if (!trigger) return { ok: false, reason: 'trigger-not-found' };
+
+        trigger.scrollIntoView({ block: 'center' });
         await sleep(300);
-      }
+        trigger.click();
+        await sleep(1500);
 
-      return {
-        ok: true,
-        totalCheckboxes: checkboxes.length,
-        newlyChecked: checkedCount,
-        alreadyChecked,
-        names: checkedNames,
-      };
-    });
+        var allCbs = Array.from(document.querySelectorAll('input[type="checkbox"]'));
+        var checkboxes = [];
+        for (var j=0; j<allCbs.length; j++) {
+          var r = allCbs[j].getBoundingClientRect();
+          if (r.width > 0 && r.height > 0) checkboxes.push(allCbs[j]);
+        }
+
+        var checkedCount = 0;
+        var alreadyChecked = 0;
+        var checkedNames = [];
+        for (var k=0; k<checkboxes.length; k++) {
+          var cb = checkboxes[k];
+          if (!cb.checked) {
+            cb.click();
+            await sleep(100);
+            checkedCount++;
+            var parentLabel = cb.closest('label');
+            var labelText = parentLabel ? parentLabel.textContent
+                          : (cb.nextElementSibling ? cb.nextElementSibling.textContent
+                          : (cb.parentElement ? cb.parentElement.textContent : ''));
+            var label = (labelText || '').trim();
+            if (label) checkedNames.push(label.slice(0, 50));
+          } else {
+            alreadyChecked++;
+          }
+        }
+
+        var allBtns = Array.from(document.querySelectorAll('button, [role="button"]'));
+        var applyBtn = null;
+        for (var m=0; m<allBtns.length; m++) {
+          var txt = (allBtns[m].textContent || '').trim();
+          if (/Применить|Apply|Saqlash|Saqla|^OK$/i.test(txt)) { applyBtn = allBtns[m]; break; }
+        }
+        if (applyBtn) { applyBtn.click(); await sleep(500); }
+        else { document.body.click(); await sleep(300); }
+
+        return {
+          ok: true,
+          totalCheckboxes: checkboxes.length,
+          newlyChecked: checkedCount,
+          alreadyChecked: alreadyChecked,
+          names: checkedNames
+        };
+      })()
+    `;
+    const result = await page.evaluate(evalBody) as {
+      ok: boolean;
+      reason?: string;
+      totalCheckboxes?: number;
+      newlyChecked?: number;
+      alreadyChecked?: number;
+      names?: string[];
+    };
 
     if (result.ok && (result.totalCheckboxes ?? 0) > 0) {
       const newly = result.newlyChecked ?? 0;
