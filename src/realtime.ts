@@ -235,22 +235,35 @@ async function ensureAllSubdivisionsChecked(session: BrowserSession): Promise<vo
         var uncheckedBefore = document.querySelectorAll('.checkbox_unchecked').length;
 
         if (selectAllEl) {
-          // "Выбрать все" topildi — bossak hammasi belgilanadi.
-          // Avval current holatini tekshiramiz: shu container'da .checkbox_unchecked bormi?
-          var saCheckbox = selectAllEl.querySelector('.checkbox_unchecked, .checkbox_checked')
-                         || selectAllEl;
-          var saIsChecked = !!selectAllEl.querySelector('.checkbox_checked')
-                          || /checked/.test((saCheckbox.className || ''));
-
-          if (!saIsChecked && uncheckedBefore > 0) {
-            // Bossak hammasi yoqiladi
+          // SELF-HEALING: agar ANY .checkbox_unchecked bo'lsa → state buzilgan
+          // (Выбрать все ko'rinishida belgilangan bo'lsa ham, ichkari item'lar
+          // unchecked). Buni tuzatish uchun:
+          //   1) Click Выбрать все — toggle holatini o'zgartiradi
+          //   2) Tekshir: agar uncheckedAfter < uncheckedBefore → fix muvaffaqiyatli
+          //   3) Aks holda → ikkinchi click (revert)
+          if (uncheckedBefore > 0) {
             fullClick(selectAllEl);
-            await sleep(800); // boshqa checkbox'lar ham yangilanishi uchun
-            checkedCount = uncheckedBefore;
-            checkedNames.push('Выбрать все (' + uncheckedBefore + ' ta belgilandi)');
+            await sleep(1000);
+            var uncheckedAfter = document.querySelectorAll('.checkbox_unchecked').length;
+            if (uncheckedAfter > uncheckedBefore) {
+              // Yomon bo'ldi — revert
+              fullClick(selectAllEl);
+              await sleep(800);
+              uncheckedAfter = document.querySelectorAll('.checkbox_unchecked').length;
+            }
+            if (uncheckedAfter === 0) {
+              checkedCount = uncheckedBefore;
+              checkedNames.push('Выбрать все (' + uncheckedBefore + ' ta ON qildi, jami 0 unchecked)');
+            } else if (uncheckedAfter < uncheckedBefore) {
+              checkedCount = uncheckedBefore - uncheckedAfter;
+              checkedNames.push('Выбрать все (qisman: ' + checkedCount + ' ON, ' + uncheckedAfter + ' qolgan)');
+            } else {
+              checkedNames.push('Выбрать все bosildi lekin holat o\'zgarmadi (uncheckedAfter=' + uncheckedAfter + ')');
+            }
+            alreadyChecked = document.querySelectorAll('.checkbox_checked').length;
           } else {
             alreadyChecked = totalCheckboxesBefore;
-            checkedNames.push('Выбрать все (allaqachon belgilangan)');
+            checkedNames.push('Выбрать все (hammasi allaqachon belgilangan)');
           }
         } else {
           // Fallback: agar "Выбрать все" topilmasa, eski usulda har birini bosish
