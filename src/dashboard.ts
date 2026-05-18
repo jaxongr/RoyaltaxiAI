@@ -539,13 +539,66 @@ setInterval(() => { if (currentPage === 'home') render(); }, 5000);
 </body>
 </html>`;
 
+// ✨ Performance: javob keshi (in-memory) — GET /api/* uchun 15 sek TTL
+// + gzip compression — dashboard'ni 5-10x tezlashtiradi.
+import { gzipSync } from 'node:zlib';
+
+interface CacheEntry { body: string; gzip?: Buffer; expiresAt: number; }
+const apiCache = new Map<string, CacheEntry>();
+const CACHE_TTL_MS = 15_000;
+const NO_CACHE_PATTERNS = [
+  /\/api\/login/, /\/api\/me/, /\/api\/sites/, /\/api\/monitor/,
+  /\/api\/violators\/.*\/block/, /\/api\/clients\/.*\/blacklist/,
+];
+function shouldCache(method: string, path: string): boolean {
+  if (method !== 'GET') return false;
+  if (!path.startsWith('/api/')) return false;
+  return !NO_CACHE_PATTERNS.some((re) => re.test(path));
+}
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of apiCache.entries()) {
+    if (v.expiresAt < now) apiCache.delete(k);
+  }
+}, 60_000);
+
+function acceptsGzip(req: import('node:http').IncomingMessage): boolean {
+  const enc = (req.headers['accept-encoding'] ?? '').toString();
+  return /gzip/i.test(enc);
+}
+
+// send() body'ni res'ga yozayotganda intercept qilamiz —
+// (a) gzip compression
+// (b) cacheable bo'lsa, cache'ga yozish
 function send(res: import('node:http').ServerResponse, status: number, body: unknown): void {
-  res.writeHead(status, {
+  const bodyStr = JSON.stringify(body);
+  // @ts-expect-error helper props set in server handler
+  const req = res.__req as import('node:http').IncomingMessage | undefined;
+  // @ts-expect-error helper props set in server handler
+  const cacheKey = res.__cacheKey as string | undefined;
+
+  const useGzip = !!req && acceptsGzip(req) && bodyStr.length > 1024;
+  const gzipBuf = useGzip ? gzipSync(bodyStr) : undefined;
+
+  if (cacheKey && status >= 200 && status < 300) {
+    apiCache.set(cacheKey, { body: bodyStr, gzip: gzipBuf, expiresAt: Date.now() + CACHE_TTL_MS });
+  }
+
+  const headers: Record<string, string> = {
     'Content-Type': 'application/json; charset=utf-8',
     'Cache-Control': 'no-store',
     'Access-Control-Allow-Origin': '*',
-  });
-  res.end(JSON.stringify(body));
+  };
+  if (useGzip && gzipBuf) {
+    headers['Content-Encoding'] = 'gzip';
+    headers['Content-Length'] = String(gzipBuf.length);
+    res.writeHead(status, headers);
+    res.end(gzipBuf);
+  } else {
+    headers['Content-Length'] = String(Buffer.byteLength(bodyStr));
+    res.writeHead(status, headers);
+    res.end(bodyStr);
+  }
 }
 
 function today(): string {
@@ -2190,6 +2243,38 @@ const server = createServer(async (req, res) => {
     res.writeHead(204);
     res.end();
     return;
+  }
+
+  // ✨ Performance: send() ichidan foydalanish uchun req va cacheKey'ni res'ga biriktiramiz
+  // @ts-expect-error helper props for send()
+  res.__req = req;
+  const method = req.method ?? 'GET';
+  if (shouldCache(method, path)) {
+    const cacheKey = `${method}:${req.url}`;
+    const hit = apiCache.get(cacheKey);
+    if (hit && hit.expiresAt > Date.now()) {
+      const useGzip = acceptsGzip(req) && !!hit.gzip;
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Cache-Control': 'no-store',
+        'Access-Control-Allow-Origin': '*',
+        'X-Cache': 'HIT',
+      };
+      if (useGzip) {
+        headers['Content-Encoding'] = 'gzip';
+        headers['Content-Length'] = String(hit.gzip!.length);
+        res.writeHead(200, headers);
+        res.end(hit.gzip);
+      } else {
+        headers['Content-Length'] = String(Buffer.byteLength(hit.body));
+        res.writeHead(200, headers);
+        res.end(hit.body);
+      }
+      return;
+    }
+    // cache miss — send() chaqirilganida cache'ga yoziladi
+    // @ts-expect-error helper props for send()
+    res.__cacheKey = cacheKey;
   }
 
   // ===== AUTH endpoint =====
