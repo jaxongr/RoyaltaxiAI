@@ -146,25 +146,33 @@ export default function TelegramUsersPage(): JSX.Element {
         <Table<TelegramUser>
           rowKey="id"
           dataSource={data?.items ?? []}
-          loading={isFetching}
-          pagination={false}
+          loading={isFetching && !data}
+          pagination={{
+            pageSize: 50,
+            showSizeChanger: true,
+            showTotal: (t, [a, b]) => `${a}-${b} / ${t}`,
+          }}
           locale={{ emptyText: <Empty description="Hali foydalanuvchi qo'shilmagan" /> }}
+          scroll={{ x: 1200 }}
           columns={[
             {
               title: 'Holat',
               dataIndex: 'is_active',
               width: 100,
+              fixed: 'left' as const,
               render: (v) => v ? <Tag color="success">aktiv</Tag> : <Tag>passiv</Tag>,
             },
             {
               title: 'Foydalanuvchi',
+              width: 220,
               render: (_, r) => (
-                <span>
-                  <b>{r.full_name ?? '(ismsiz)'}</b>
-                  {r.username && <span style={{ color: '#6B7280' }}> @{r.username}</span>}
-                  <br />
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {r.full_name ?? '(ismsiz)'}
+                    {r.username && <span style={{ color: '#6B7280', fontWeight: 400 }}> @{r.username}</span>}
+                  </div>
                   <small style={{ color: '#9CA3AF' }}>chat_id: <code>{r.chat_id}</code></small>
-                </span>
+                </div>
               ),
             },
             {
@@ -180,6 +188,7 @@ export default function TelegramUsersPage(): JSX.Element {
             {
               title: 'Hududlar (obuna)',
               dataIndex: 'regions',
+              ellipsis: true,
               render: (v, r) => {
                 if (r.role === 'admin') {
                   return <Tag color="gold">🌍 Hammasi</Tag>;
@@ -189,15 +198,18 @@ export default function TelegramUsersPage(): JSX.Element {
                 try { arr = JSON.parse(v); } catch { /* ignore */ }
                 if (arr.length === 0) return <Tag color="gold">🌍 Hammasi</Tag>;
                 return (
-                  <span>
-                    {arr.slice(0, 5).map((rg) => <Tag key={rg} color="blue">{rg}</Tag>)}
-                    {arr.length > 5 && <Tag>+{arr.length - 5} ta</Tag>}
-                  </span>
+                  <Tooltip title={arr.join(', ')}>
+                    <span>
+                      {arr.slice(0, 4).map((rg) => <Tag key={rg} color="blue" style={{ marginBottom: 2 }}>{rg}</Tag>)}
+                      {arr.length > 4 && <Tag>+{arr.length - 4}</Tag>}
+                    </span>
+                  </Tooltip>
                 );
               },
             },
             {
               title: 'Xabar turlari',
+              width: 240,
               render: (_, r) => (
                 <span style={{ fontSize: 12 }}>
                   {r.receive_alerts ? <Tag color="error">⚠️ Alert</Tag> : null}
@@ -206,10 +218,11 @@ export default function TelegramUsersPage(): JSX.Element {
                 </span>
               ),
             },
-            { title: 'Izoh', dataIndex: 'note', ellipsis: true },
+            { title: 'Izoh', dataIndex: 'note', ellipsis: true, width: 180 },
             {
               title: 'Amallar',
-              width: 280,
+              width: 170,
+              fixed: 'right' as const,
               render: (_, r) => (
                 <span>
                   <Tooltip title="Test xabari yuborish">
@@ -218,23 +231,21 @@ export default function TelegramUsersPage(): JSX.Element {
                       icon={<SendOutlined />}
                       onClick={() => testMut.mutate(r.id)}
                       loading={testMut.isPending && testMut.variables === r.id}
-                      style={{ marginRight: 8 }}
-                    >
-                      Test
-                    </Button>
+                      style={{ marginRight: 6 }}
+                    />
                   </Tooltip>
-                  <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)} style={{ marginRight: 8 }}>
-                    Tahrir
-                  </Button>
+                  <Tooltip title="Tahrir">
+                    <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)} style={{ marginRight: 6 }} />
+                  </Tooltip>
                   <Popconfirm
-                    title="O'chirilsinmi?"
+                    title="Foydalanuvchini o'chirish?"
                     onConfirm={() => deleteMut.mutate(r.id)}
                     okText="Ha"
                     cancelText="Yo'q"
                   >
-                    <Button size="small" danger icon={<DeleteOutlined />}>
-                      O'chir
-                    </Button>
+                    <Tooltip title="O'chirish">
+                      <Button size="small" danger icon={<DeleteOutlined />} />
+                    </Tooltip>
                   </Popconfirm>
                 </span>
               ),

@@ -22,27 +22,41 @@ export default function BlocksPage(): JSX.Element {
         <Table<BlockRow>
           size="middle"
           rowKey="callsign"
-          loading={isFetching}
+          loading={isFetching && !data}
           dataSource={data?.items ?? []}
-          pagination={{ pageSize: 50 }}
-          locale={{ emptyText: <Empty /> }}
+          pagination={{
+            pageSize: 50,
+            showSizeChanger: true,
+            showTotal: (t, [a, b]) => `${a}-${b} / ${t}`,
+          }}
+          locale={{ emptyText: <Empty description="Blok tavsiyasi yo'q" /> }}
           onRow={(r) => ({ onClick: () => setDrvOpen(r.callsign), style: { cursor: 'pointer' } })}
+          scroll={{ x: 1000 }}
           columns={[
-            { title: 'Belgi', dataIndex: 'callsign', width: 130, render: (v) => <Tag color="error">{v}</Tag> },
-            { title: 'Haydovchi', dataIndex: 'driver_name' },
-            { title: 'Alertlar', dataIndex: 'alert_count', width: 100, sorter: (a, b) => a.alert_count - b.alert_count },
+            { title: 'Belgi', dataIndex: 'callsign', width: 130, fixed: 'left' as const, render: (v) => <Tag color="error">{v}</Tag> },
+            { title: 'Haydovchi', dataIndex: 'driver_name', width: 220, ellipsis: true },
+            {
+              title: 'Alertlar',
+              dataIndex: 'alert_count',
+              width: 100,
+              align: 'right' as const,
+              sorter: (a, b) => a.alert_count - b.alert_count,
+              render: (v) => <b>{v}</b>,
+            },
             {
               title: 'Jami ball',
               dataIndex: 'total_score',
               width: 110,
-              render: (v) => <Tag color="error">{v}</Tag>,
+              align: 'center' as const,
+              render: (v) => <Tag color="error" style={{ margin: 0, fontWeight: 600 }}>{v}</Tag>,
               sorter: (a, b) => a.total_score - b.total_score,
-              defaultSortOrder: 'descend',
+              defaultSortOrder: 'descend' as const,
             },
             {
               title: 'Sabab',
               dataIndex: 'reason',
-              width: 140,
+              width: 180,
+              ellipsis: true,
               render: (v) => (
                 <Tooltip title="Asosiy firibgarlik turi">
                   <Tag>{v}</Tag>

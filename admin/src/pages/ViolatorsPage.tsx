@@ -153,15 +153,20 @@ export default function ViolatorsPage(): JSX.Element {
         <Table<ViolatorRow>
           size="middle"
           rowKey="callsign"
-          loading={isFetching}
+          loading={isFetching && !data}
           dataSource={filtered}
           rowClassName={(r) => (r.site_locked ? 'row-blocked' : '')}
-          pagination={{ pageSize: 50 }}
-          locale={{ emptyText: <Empty /> }}
+          pagination={{
+            pageSize: 50,
+            showSizeChanger: true,
+            showTotal: (t, [a, b]) => `${a}-${b} / ${t}`,
+          }}
+          locale={{ emptyText: <Empty description="Qoida buzar haydovchi yo'q" /> }}
+          scroll={{ x: 1500 }}
           columns={[
-            { title: 'Belgi', dataIndex: 'callsign', width: 110, render: (v) => <Tag>{v}</Tag> },
-            { title: 'Haydovchi', dataIndex: 'driver_name', ellipsis: true },
-            { title: 'Hudud', dataIndex: 'region', width: 120 },
+            { title: 'Belgi', dataIndex: 'callsign', width: 110, fixed: 'left' as const, render: (v) => <Tag>{v}</Tag> },
+            { title: 'Haydovchi', dataIndex: 'driver_name', width: 200, ellipsis: true },
+            { title: 'Hudud', dataIndex: 'region', width: 130, ellipsis: true },
             {
               title: 'Jami zakaz',
               dataIndex: 'orders_count',
@@ -226,17 +231,18 @@ export default function ViolatorsPage(): JSX.Element {
             },
             {
               title: 'Amallar',
-              width: 260,
+              width: 240,
+              fixed: 'right' as const,
               render: (_, r) => (
                 <span>
-                  <Button
-                    size="small"
-                    icon={<EyeOutlined />}
-                    onClick={() => setDrawerCallsign(r.callsign)}
-                    style={{ marginRight: 8 }}
-                  >
-                    Ko'rish
-                  </Button>
+                  <Tooltip title="Qoida buzishlari ro'yxati">
+                    <Button
+                      size="small"
+                      icon={<EyeOutlined />}
+                      onClick={() => setDrawerCallsign(r.callsign)}
+                      style={{ marginRight: 8 }}
+                    />
+                  </Tooltip>
                   {r.site_locked ? (
                     <Popconfirm
                       title="Blokdan chiqarilsinmi?"
@@ -252,7 +258,7 @@ export default function ViolatorsPage(): JSX.Element {
                         icon={<UnlockOutlined />}
                         loading={unblockMut.isPending && unblockMut.variables === r.callsign}
                       >
-                        Blokdan chiqarish
+                        Chiqarish
                       </Button>
                     </Popconfirm>
                   ) : (

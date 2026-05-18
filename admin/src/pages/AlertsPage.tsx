@@ -95,22 +95,34 @@ export default function AlertsPage(): JSX.Element {
         <Table<AlertRow>
           size="middle"
           rowKey="id"
-          loading={isFetching}
+          loading={isFetching && !data}
           dataSource={data?.items ?? []}
-          pagination={{ pageSize: 30, showSizeChanger: true }}
+          pagination={{
+            pageSize: 30,
+            showSizeChanger: true,
+            showTotal: (t, [a, b]) => `${a}-${b} / ${t}`,
+          }}
           locale={{ emptyText: <Empty /> }}
-          onRow={(r) => ({ onClick: () => setDrvOpen(r.callsign), style: { cursor: 'pointer' } })}
+          onRow={(r) => ({
+            onClick: (e) => {
+              if ((e.target as HTMLElement).closest('.alert-action')) return;
+              setDrvOpen(r.callsign);
+            },
+            style: { cursor: 'pointer' },
+          })}
+          scroll={{ x: 1400 }}
           columns={[
-            { title: 'Vaqt', render: (_, r) => fmtTime(r.created_at), width: 150 },
-            { title: 'Belgi', dataIndex: 'callsign', width: 110, render: (v) => <Tag>{v || '—'}</Tag> },
-            { title: 'Haydovchi', dataIndex: 'driver_name', ellipsis: true },
-            { title: 'Hudud', dataIndex: 'region', width: 110 },
-            { title: 'Masofa', render: (_, r) => fmtKm(r.distance_km), width: 90 },
-            { title: 'Davomi', render: (_, r) => fmtSek(r.duration_sec), width: 100 },
-            { title: 'Narx', render: (_, r) => fmtNarx(r.amount), width: 110 },
+            { title: 'Vaqt', render: (_, r) => fmtTime(r.created_at), width: 150, fixed: 'left' as const },
+            { title: 'Belgi', dataIndex: 'callsign', width: 110, fixed: 'left' as const, render: (v) => <Tag>{v || '—'}</Tag> },
+            { title: 'Haydovchi', dataIndex: 'driver_name', width: 200, ellipsis: true },
+            { title: 'Hudud', dataIndex: 'region', width: 130, ellipsis: true },
+            { title: 'Masofa', render: (_, r) => fmtKm(r.distance_km), width: 90, align: 'right' as const },
+            { title: 'Davomi', render: (_, r) => fmtSek(r.duration_sec), width: 100, align: 'right' as const },
+            { title: 'Narx', render: (_, r) => fmtNarx(r.amount), width: 120, align: 'right' as const },
             {
               title: 'Sabab',
               dataIndex: 'details',
+              width: 280,
               ellipsis: true,
               render: (v) => (
                 <Tooltip title={v} placement="topLeft">
@@ -122,11 +134,13 @@ export default function AlertsPage(): JSX.Element {
               title: 'Ball',
               dataIndex: 'fraud_score',
               width: 80,
-              render: (v) => <Tag color={v >= 150 ? 'error' : v >= 80 ? 'warning' : 'processing'}>{v}</Tag>,
+              align: 'center' as const,
+              render: (v) => <Tag color={v >= 150 ? 'error' : v >= 80 ? 'warning' : 'processing'} style={{ margin: 0, fontWeight: 600 }}>{v}</Tag>,
             },
             {
               title: 'Chora',
               width: 180,
+              fixed: 'right' as const,
               render: (_, r) =>
                 r.action_taken ? (
                   <Tooltip title={`${r.action_by} • ${r.action_note || ''} • ${r.action_at}`}>
@@ -135,16 +149,11 @@ export default function AlertsPage(): JSX.Element {
                     </Tag>
                   </Tooltip>
                 ) : (
-                  <Button
-                    size="small"
-                    icon={<FlagOutlined />}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setActionFor(r);
-                    }}
-                  >
-                    Chora ko'rish
-                  </Button>
+                  <span className="alert-action" onClick={(e) => e.stopPropagation()}>
+                    <Button size="small" icon={<FlagOutlined />} onClick={() => setActionFor(r)}>
+                      Chora
+                    </Button>
+                  </span>
                 ),
             },
           ]}

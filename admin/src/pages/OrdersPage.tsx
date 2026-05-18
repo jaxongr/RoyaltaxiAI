@@ -62,39 +62,47 @@ export default function OrdersPage(): JSX.Element {
         <Table<OrderRow>
           size="small"
           rowKey="order_id"
-          loading={isFetching}
+          loading={isFetching && !data}
           dataSource={data?.items ?? []}
-          pagination={{ pageSize: 50, showSizeChanger: true }}
-          locale={{ emptyText: <Empty /> }}
+          pagination={{
+            pageSize: 50,
+            showSizeChanger: true,
+            showTotal: (t, [a, b]) => `${a}-${b} / ${t}`,
+            pageSizeOptions: [20, 50, 100, 200],
+          }}
+          locale={{ emptyText: <Empty description="Berilgan filtr bo'yicha zakaz yo'q" /> }}
           onRow={(r) => ({ onClick: () => setOrderModal(r.order_id), style: { cursor: 'pointer' } })}
+          scroll={{ x: 1200 }}
           columns={[
-            { title: 'Vaqt', dataIndex: 'time', width: 70 },
+            { title: 'Vaqt', dataIndex: 'time', width: 70, fixed: 'left' as const },
             {
               title: 'Belgi',
               dataIndex: 'callsign',
               width: 110,
+              fixed: 'left' as const,
               render: (v) => (
                 <a onClick={(e) => { e.stopPropagation(); setDrvOpen(v); }}>
                   <Tag>{v || '—'}</Tag>
                 </a>
               ),
             },
-            { title: 'Haydovchi', dataIndex: 'driver_name', ellipsis: true },
-            { title: 'Hudud', dataIndex: 'region', width: 110 },
-            { title: 'Masofa', render: (_, r) => fmtKm(r.distance_km), width: 80 },
-            { title: 'Narx', render: (_, r) => fmtNarx(r.amount), width: 110 },
+            { title: 'Haydovchi', dataIndex: 'driver_name', width: 200, ellipsis: true },
+            { title: 'Hudud', dataIndex: 'region', width: 130, ellipsis: true },
+            { title: 'Masofa', render: (_, r) => fmtKm(r.distance_km), width: 90, align: 'right' as const },
+            { title: 'Narx', render: (_, r) => fmtNarx(r.amount), width: 120, align: 'right' as const },
             {
               title: 'Status',
               dataIndex: 'status',
               width: 130,
-              render: (v) => <Tag color={v === 'finish' ? 'success' : 'warning'}>{statusLabel(v)}</Tag>,
+              render: (v) => <Tag color={v === 'finish' ? 'success' : 'warning'} style={{ margin: 0 }}>{statusLabel(v)}</Tag>,
             },
             {
               title: 'Ball',
               dataIndex: 'fraud_score',
-              width: 70,
+              width: 80,
+              align: 'center' as const,
               render: (v) =>
-                v ? <Tag color={v >= 150 ? 'error' : v >= 80 ? 'warning' : 'processing'}>{v}</Tag> : '—',
+                v ? <Tag color={v >= 150 ? 'error' : v >= 80 ? 'warning' : 'processing'} style={{ margin: 0, fontWeight: 600 }}>{v}</Tag> : <span style={{ color: '#9aa0aa' }}>—</span>,
             },
           ]}
         />

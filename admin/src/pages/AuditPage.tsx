@@ -31,20 +31,25 @@ export default function AuditPage(): JSX.Element {
       <Table<AuditRow>
         size="middle"
         rowKey="id"
-        loading={isFetching}
+        loading={isFetching && !data}
         dataSource={data?.items ?? []}
-        pagination={{ pageSize: 50 }}
-        locale={{ emptyText: <Empty /> }}
+        pagination={{
+          pageSize: 50,
+          showSizeChanger: true,
+          showTotal: (t, [a, b]) => `${a}-${b} / ${t}`,
+        }}
+        locale={{ emptyText: <Empty description="Hech qanday amal yo'q" /> }}
+        scroll={{ x: 1100 }}
         columns={[
-          { title: 'Vaqt', dataIndex: 'created_at', width: 170, render: (v) => fmtTime(v) },
+          { title: 'Vaqt', dataIndex: 'created_at', width: 170, fixed: 'left' as const, render: (v) => fmtTime(v) },
           {
             title: 'Amal',
             dataIndex: 'action',
-            width: 220,
-            render: (v) => <Tag color={actionColors[v] ?? 'default'}>{actionLabels[v] ?? v}</Tag>,
+            width: 240,
+            render: (v) => <Tag color={actionColors[v] ?? 'default'} style={{ margin: 0 }}>{actionLabels[v] ?? v}</Tag>,
           },
-          { title: 'Maqsad', render: (_, r) => `${r.target_type ?? ''}: ${r.target_id ?? ''}`, width: 200 },
-          { title: 'Kim', dataIndex: 'actor', width: 100 },
+          { title: 'Maqsad', render: (_, r) => `${r.target_type ?? ''}: ${r.target_id ?? ''}`, width: 220, ellipsis: true },
+          { title: 'Kim', dataIndex: 'actor', width: 110 },
           { title: 'Tafsilot', dataIndex: 'details', ellipsis: true },
         ]}
       />

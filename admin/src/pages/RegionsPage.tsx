@@ -36,7 +36,8 @@ export default function RegionsPage(): JSX.Element {
           rowKey="region"
           dataSource={items}
           pagination={false}
-          locale={{ emptyText: <Empty /> }}
+          locale={{ emptyText: <Empty description="Hudud ma'lumotlari yo'q" /> }}
+          scroll={{ x: 1100 }}
           onRow={(r) => ({
             onClick: (e) => {
               // Agar Blok tugmasi yoki Popconfirm ichidan kelgan bo'lsa — modal ochmaslik
@@ -84,7 +85,7 @@ export default function RegionsPage(): JSX.Element {
               width: 90,
               render: (v) => (v ? <Tag color="warning">{v}</Tag> : '0'),
             },
-            { title: 'Top haydovchi', dataIndex: 'topDriver', ellipsis: true },
+            { title: 'Top haydovchi', dataIndex: 'topDriver', ellipsis: true, width: 200 },
             {
               title: 'Amal',
               width: 100,
