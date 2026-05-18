@@ -59,6 +59,7 @@ interface MonitorStats {
 let accessibleOfficeIds: number[] | null = null;
 let accessibleOfficesRefreshedAt = 0;
 
+let _lastOfficesEmptyLogAt = 0;
 async function refreshAccessibleOffices(session: BrowserSession): Promise<void> {
   try {
     const resp = await getAccessibleOffices(session.page);
@@ -72,8 +73,13 @@ async function refreshAccessibleOffices(session: BrowserSession): Promise<void> 
         `🏢 Подразделение: ${ids.length} ta shahar topildi (hammasi monitoring uchun belgilanadi)`,
       );
     } else {
-      logger.warn('Подразделение API bo\'sh ro\'yxat qaytardi — fallback: officeIds=null');
+      // Log spam'dan saqlanish — har 30 daqiqada faqat 1 marta
       accessibleOfficeIds = null;
+      accessibleOfficesRefreshedAt = Date.now();
+      if (Date.now() - _lastOfficesEmptyLogAt > 30 * 60 * 1000) {
+        _lastOfficesEmptyLogAt = Date.now();
+        logger.info('Подразделение API enumeratsiya: bo\'sh javob, UI-fix orqali ishlamoqda');
+      }
     }
   } catch (err) {
     logger.warn(
