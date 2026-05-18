@@ -37,23 +37,28 @@ export default function RegionsPage(): JSX.Element {
           dataSource={items}
           pagination={false}
           locale={{ emptyText: <Empty /> }}
+          onRow={(r) => ({
+            onClick: (e) => {
+              // Agar Blok tugmasi yoki Popconfirm ichidan kelgan bo'lsa — modal ochmaslik
+              const target = e.target as HTMLElement;
+              if (target.closest('.region-block-action, .ant-popover, .ant-modal')) return;
+              setOpen(r.region);
+            },
+            style: { cursor: 'pointer' },
+          })}
           columns={[
             {
               title: 'Hudud',
               dataIndex: 'region',
-              render: (v) => (
-                <b style={{ cursor: 'pointer' }} onClick={() => setOpen(v)}>
-                  {v || '(noma\'lum)'}
-                </b>
-              ),
+              render: (v) => <b>{v || '(noma\'lum)'}</b>,
               width: 200,
             },
             {
               title: 'Zakazlar',
               dataIndex: 'orders',
               width: 200,
-              render: (v, r) => (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }} onClick={() => setOpen(r.region)}>
+              render: (v) => (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <Progress percent={(v / max) * 100} showInfo={false} strokeColor="#FC3F1D" style={{ flex: 1 }} />
                   <b style={{ minWidth: 50, textAlign: 'right' }}>{v}</b>
                 </div>
@@ -84,17 +89,19 @@ export default function RegionsPage(): JSX.Element {
               title: 'Amal',
               width: 100,
               render: (_, r) => (
-                <Popconfirm
-                  title="Bu hududni bloklash"
-                  description={`"${r.region}" hududini ro'yxatdan o'chirilsinmi? (ko'cha/mahalla nomli noto'g'ri hududlarni tozalash uchun)`}
-                  okText="Ha, blokla"
-                  cancelText="Yo'q"
-                  onConfirm={() => blockMut.mutate(r.region)}
-                >
-                  <Button danger size="small" icon={<StopOutlined />} loading={blockMut.isPending}>
-                    Blok
-                  </Button>
-                </Popconfirm>
+                <span className="region-block-action" onClick={(e) => e.stopPropagation()}>
+                  <Popconfirm
+                    title="Bu hududni bloklash"
+                    description={`"${r.region}" hududini ro'yxatdan o'chirilsinmi?`}
+                    okText="Ha, blokla"
+                    cancelText="Yo'q"
+                    onConfirm={() => blockMut.mutate(r.region)}
+                  >
+                    <Button danger size="small" icon={<StopOutlined />} loading={blockMut.isPending}>
+                      Blok
+                    </Button>
+                  </Popconfirm>
+                </span>
               ),
             },
           ]}
