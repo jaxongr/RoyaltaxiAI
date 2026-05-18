@@ -230,19 +230,10 @@ export async function sendAlert(a: AlertPayload): Promise<boolean> {
   return r.sent > 0;
 }
 
-export async function sendStartup(info: { interval: number; mode: string }): Promise<boolean> {
-  const msg = [
-    '🟢 <b>Royaltaxi AI monitor ishga tushdi</b>',
-    '',
-    `Rejim: <code>${info.mode}</code>`,
-    `Interval: ${info.interval} sek`,
-    `Boshlanish: ${new Date().toLocaleString('ru-RU', { timeZone: 'Asia/Tashkent' })}`,
-    '',
-    'Buyruqlar: /stats /top /blocks /help',
-  ].join('\n');
-  // Faqat admin — texnik xabar
-  const r = await broadcast(msg, { type: 'admin_only' });
-  return r.sent > 0;
+export async function sendStartup(_info: { interval: number; mode: string }): Promise<boolean> {
+  // Foydalanuvchi so'roviga ko'ra "monitor ishga tushdi" xabarlari o'chirilgan
+  // (har restart'da 5+ ta xabar — spam edi).
+  return false;
 }
 
 export async function sendPeriodicReport(report: {
