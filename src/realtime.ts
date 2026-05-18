@@ -184,8 +184,24 @@ async function ensureAllSubdivisionsChecked(session: BrowserSession): Promise<vo
           await sleep(2000);
         }
 
+        // Popup ichidagi scroll container — toplama scroll qilamiz uchun ko'proq
+        // checkbox'larni virtual list ham yuklasin
+        var popupContainers = Array.from(document.querySelectorAll('[class*="popup"], [class*="dropdown"], [class*="select"], [class*="options"], [class*="list"]'));
+        for (var pp=0; pp<popupContainers.length; pp++) {
+          try {
+            var pc = popupContainers[pp];
+            if (pc.scrollHeight > pc.clientHeight) {
+              pc.scrollTop = pc.scrollHeight; // pastga scroll
+              await sleep(200);
+              pc.scrollTop = 0; // qaytadan tepa
+              await sleep(200);
+            }
+          } catch(e) {}
+        }
+
         // HiveTaxi custom checkbox: .checkbox_unchecked / .checkbox_checked
         // Plus standard input[type=checkbox] fallback
+        // OFF-SCREEN ham olamiz (popup scroll'da yashiringan bo'lishi mumkin)
         var uncheckedEls = Array.from(document.querySelectorAll('.checkbox_unchecked'));
         var checkedEls = Array.from(document.querySelectorAll('.checkbox_checked'));
         var stdCheckboxes = Array.from(document.querySelectorAll('input[type="checkbox"]:not(:disabled)'));
