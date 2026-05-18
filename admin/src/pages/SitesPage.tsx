@@ -229,12 +229,33 @@ export default function SitesPage(): JSX.Element {
             },
             {
               title: 'Nom / URL',
+              width: 320,
               render: (_, s) => (
-                <div>
-                  <div style={{ fontWeight: 600, marginBottom: 2 }}>
+                <div style={{ minWidth: 0 }}>
+                  <div
+                    style={{
+                      fontWeight: 600,
+                      marginBottom: 2,
+                      whiteSpace: 'nowrap',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                    }}
+                  >
                     {s.name || <span style={{ color: '#9aa0aa' }}>(nom yo'q)</span>}
                   </div>
-                  <code style={{ fontSize: 11, color: '#6B7280' }}>{s.base_url}</code>
+                  <code
+                    style={{
+                      fontSize: 11,
+                      color: '#6B7280',
+                      display: 'block',
+                      whiteSpace: 'nowrap',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                    }}
+                    title={s.base_url}
+                  >
+                    {s.base_url}
+                  </code>
                 </div>
               ),
             },
