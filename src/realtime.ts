@@ -84,6 +84,118 @@ async function refreshAccessibleOffices(session: BrowserSession): Promise<void> 
   }
 }
 
+/**
+ * UI orqali Подразделение filtrini ochib, barcha mavjud (lekin belgilanmagan)
+ * checkbox'larni belgilaydi. Bu sayt API'si "saqlangan filter"ga bog'liq holatda
+ * yangi tumanlar (Poytug' va boshqalar) kelishini ta'minlaydi.
+ *
+ * Har 1 soatda chaqiriladi — agar login'ga yangi hudud qo'shilsa, u ham
+ * avtomatik belgilanadi.
+ */
+async function ensureAllSubdivisionsChecked(session: BrowserSession): Promise<void> {
+  const { page } = session;
+  const archiveUrl = `${config.ROYALTAXI_BASE_URL}${URLS.archiveOrders}`;
+  try {
+    // Sahifa hali archive'da emas bo'lsa, navigatsiya
+    if (!page.url().includes('/archive')) {
+      await page.goto(archiveUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => undefined);
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+
+    const result = await page.evaluate(async () => {
+      const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+      // 1) Filter trigger'ni topish — "Подразделение" matni bilan
+      const findTrigger = (): HTMLElement | null => {
+        const all = Array.from(document.querySelectorAll<HTMLElement>('button, [role="button"], .hv-filter, [class*="filter"], [class*="dropdown"], label, span, div'));
+        return all.find((el) => {
+          const t = (el.textContent ?? '').trim();
+          return /^Подразделение(\s|:|$)/i.test(t) || /^Subdivisi|^Hudud/i.test(t);
+        }) ?? null;
+      };
+
+      const trigger = findTrigger();
+      if (!trigger) return { ok: false, reason: 'trigger-not-found' };
+
+      // Ko'rinmasligi mumkin — scroll va click
+      trigger.scrollIntoView({ block: 'center' });
+      await sleep(300);
+      trigger.click();
+      await sleep(1500); // popup'ning ochilishini kutamiz
+
+      // 2) Popup ichida checkbox'larni topish
+      // HiveTaxi UI'ida odatda .hv-checkbox, .hv-select, input[type=checkbox]
+      const checkboxes = Array.from(document.querySelectorAll<HTMLInputElement>(
+        'input[type="checkbox"]'
+      )).filter((cb) => {
+        const r = cb.getBoundingClientRect();
+        return r.width > 0 && r.height > 0; // visible
+      });
+
+      // 3) Har bir belgilanmagan checkbox'ni bosamiz
+      let checkedCount = 0;
+      let alreadyChecked = 0;
+      const checkedNames: string[] = [];
+      for (const cb of checkboxes) {
+        if (!cb.checked) {
+          cb.click();
+          await sleep(100);
+          checkedCount++;
+          // Yonidagi label matnini olishga harakat qilamiz
+          const label = cb.closest('label')?.textContent?.trim()
+            ?? cb.nextElementSibling?.textContent?.trim()
+            ?? cb.parentElement?.textContent?.trim()
+            ?? '';
+          if (label) checkedNames.push(label.slice(0, 50));
+        } else {
+          alreadyChecked++;
+        }
+      }
+
+      // 4) "Применить" / "Apply" tugmasini bosish (agar bor bo'lsa)
+      const applyBtn = Array.from(document.querySelectorAll<HTMLElement>('button, [role="button"]'))
+        .find((b) => /Применить|Apply|Saqlash|Saqla|OK$/i.test((b.textContent ?? '').trim()));
+      if (applyBtn) {
+        applyBtn.click();
+        await sleep(500);
+      } else {
+        // Popup'ni yopish uchun escape yoki tashqariga click
+        document.body.click();
+        await sleep(300);
+      }
+
+      return {
+        ok: true,
+        totalCheckboxes: checkboxes.length,
+        newlyChecked: checkedCount,
+        alreadyChecked,
+        names: checkedNames,
+      };
+    });
+
+    if (result.ok && (result.totalCheckboxes ?? 0) > 0) {
+      const newly = result.newlyChecked ?? 0;
+      const already = result.alreadyChecked ?? 0;
+      const total = result.totalCheckboxes ?? 0;
+      if (newly > 0) {
+        logger.info(
+          { newlyChecked: newly, alreadyChecked: already, names: result.names },
+          `✅ Подразделение UI: ${newly} ta yangi hudud belgilandi (jami ${total})`,
+        );
+      } else {
+        logger.info(
+          { totalCheckboxes: total },
+          `Подразделение UI: hammasi belgilangan (${already})`,
+        );
+      }
+    } else {
+      logger.warn({ reason: (result as { reason?: string }).reason }, 'Подразделение UI ochilmadi');
+    }
+  } catch (err) {
+    logger.warn({ err: (err as Error).message }, 'Подразделение UI tekshirishda xato');
+  }
+}
+
 function parseArgs(): {
   interval: number;
   lookback: number;
@@ -816,6 +928,25 @@ async function main(): Promise<void> {
     60 * 1000, // har daqiqa tekshiriladi, 23:59 oynasi bo'lsa yuboriladi
   );
 
+  // Подразделение UI tekshiruvi — har 1 soatda barcha hududlar belgilanganini
+  // tekshiradi, agar login'ga yangi hudud qo'shilgan bo'lsa, avtomatik belgilaydi.
+  setInterval(
+    () => {
+      void (async (): Promise<void> => {
+        try {
+          const s = await new Promise<BrowserSession | null>((resolve) => {
+            // Hozirgi aktiv session'ni olish — module-level _activeSession
+            resolve(_getActiveSession());
+          });
+          if (s) await ensureAllSubdivisionsChecked(s);
+        } catch (err) {
+          logger.warn({ err: (err as Error).message }, 'Hourly Подразделение UI tekshirish xato');
+        }
+      })();
+    },
+    60 * 60 * 1000, // har 1 soat
+  );
+
   // "Yangi zakaz yo'q" alarm — har 5 daqiqada tekshiradi
   let noOrdersAlertSent = false;
   let lastNoOrderAt = 0;
@@ -881,6 +1012,11 @@ async function main(): Promise<void> {
       // bilan chaqiriladi, Poytug' va boshqa tumanlar tushib qolmaydi.
       await refreshAccessibleOffices(session);
 
+      // UI'da Подразделение filtrini barcha hududlarga belgilab qo'yamiz
+      // Bu sayt'ning saqlangan filteri Poytug' kabi tumanlarni tashlab ketmasligi uchun.
+      // Birinchi marta sessiya ochilganda va keyin har 1 soatda takror tekshiramiz.
+      await ensureAllSubdivisionsChecked(session);
+
       // Startup backfill — bugun 00:00 dan tortib olmagan zakazlarni to'ldiramiz
       // Faqat birinchi sessiyada (qayta-tiklashda emas)
       if (stats.ticks === 0) {
@@ -942,6 +1078,7 @@ async function main(): Promise<void> {
 // Active session reference (graceful shutdown uchun)
 let _activeSession: BrowserSession | null = null;
 export function _setActiveSession(s: BrowserSession | null): void { _activeSession = s; }
+function _getActiveSession(): BrowserSession | null { return _activeSession; }
 
 async function gracefulExit(signal: string): Promise<void> {
   logger.info({ signal }, 'Monitor yopilmoqda');
