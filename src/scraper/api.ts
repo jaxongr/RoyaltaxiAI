@@ -398,10 +398,24 @@ export function toDbOrder(
   // Service like "Яккабаг [BonusTaxi]" → region + service
   const svcRaw = details?.service ?? '';
   const svcMatch = svcRaw.match(/^(.+?)\s*\[(BizningTaxi|BonusTaxi|Royal)\]$/);
-  const region = svcMatch?.[1]?.trim() ?? '';
-  const service = svcMatch?.[2] ?? '';
+  const service = svcMatch?.[2] ?? svcRaw.trim();
   const tariff = details?.tariff ?? '';
   const address = list.route?.join(' → ') ?? '';
+  // Region: avval service brackets'idan, agar yo'q bo'lsa — address'ning birinchi qismidan
+  // ("Пойтуг, Кушкуприк" → "Пойтуг"; "Андижан, Тош питак → Пойтуг, X" → "Андижан")
+  let region = svcMatch?.[1]?.trim() ?? '';
+  if (!region && address) {
+    // birinchi route nuqtasidagi vergulgacha bo'lgan qism
+    const firstRoute = list.route?.[0] ?? '';
+    const commaIdx = firstRoute.indexOf(',');
+    if (commaIdx > 0) {
+      const candidate = firstRoute.slice(0, commaIdx).trim();
+      // 2-50 belgi va alfa-numeric (geo nomi)
+      if (candidate.length >= 2 && candidate.length <= 50) {
+        region = candidate;
+      }
+    }
+  }
   const clientPhone = details?.client?.phone ?? '';
   const dateFinished = list.dateFinished ?? details?.time ?? '';
   const [datePart, timePartFull] = dateFinished.split('T');
