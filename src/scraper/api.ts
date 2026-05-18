@@ -195,11 +195,21 @@ export async function getAccessibleOffices(page: Page): Promise<OfficesAndFleets
   // qarab birortasi javob beradi. Birinchi muvaffaqiyatli (bo'sh bo'lmagan) javobni
   // ishlatamiz. POST bilan boshlaymiz, keyin GET fallbacklar.
   const candidates: Array<{ method: 'POST' | 'GET'; path: string }> = [
+    // Archive sahifa filteri (eng ehtimoliy)
+    { method: 'POST', path: '/management/archive/get-offices' },
+    { method: 'GET',  path: '/management/archive/get-offices' },
+    { method: 'POST', path: '/management/archive/get-fleets' },
+    { method: 'GET',  path: '/management/archive/get-fleets' },
+    { method: 'POST', path: '/management/archive/get-filters' },
+    { method: 'GET',  path: '/management/archive/get-filters' },
+    // Fleet sahifalari (eski recon)
     { method: 'POST', path: '/management/fleet/vehicles-map/get-fleets' },
     { method: 'GET',  path: '/management/fleet/plans/fleets' },
     { method: 'GET',  path: '/management/fleet/cars/fleets' },
     { method: 'GET',  path: '/management/fleet/settings/fleets' },
     { method: 'GET',  path: '/management/fleet/options/fleets' },
+    // Drivers (boshqa nom — flat fleet list)
+    { method: 'GET',  path: '/management/fleet/drivers/get-fleets' },
   ];
 
   for (const c of candidates) {
