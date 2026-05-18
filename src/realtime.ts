@@ -123,32 +123,35 @@ async function ensureAllSubdivisionsChecked(session: BrowserSession): Promise<vo
         function sleep(ms){return new Promise(function(r){setTimeout(r,ms);});}
 
         function findTrigger() {
-          // HiveTaxi UI: <label>Подразделение</label> + qardosh <div class="select-default">
-          // Avval label'ni topib, keyin uning parent ichidagi select dropdown'ni qaytaramiz.
+          // HiveTaxi UI: <label>Подразделение</label> ostidagi <input class="mselect-input">
           var labels = Array.from(document.querySelectorAll('label'));
           for (var i=0; i<labels.length; i++) {
             var lblText = (labels[i].textContent || '').trim();
             if (/^Подразделени/i.test(lblText)) {
-              // parent.col-3 ichidagi .select-default yoki .mselect-input
               var parent = labels[i].parentElement;
               if (parent) {
-                var dd = parent.querySelector('.select-default, .mselect-input, [class*="select"]');
+                // Avval input — bu eng aniq trigger
+                var inp = parent.querySelector('input.mselect-input, input[class*="select"]');
+                if (inp) return inp;
+                var dd = parent.querySelector('.select-default, [class*="select"]');
                 if (dd) return dd;
               }
-              // fallback: label dan keyingi sibling
               var next = labels[i].nextElementSibling;
               if (next) return next;
               return labels[i];
             }
           }
-          // Eski yondashuv — agar label topilmasa, kengroq qidirish
-          var all = Array.from(document.querySelectorAll('button, [role="button"], [class*="filter"], [class*="dropdown"], [class*="select"], span, div, a'));
-          for (var k=0; k<all.length; k++) {
-            var t = (all[k].textContent || '').trim();
-            if (t.length > 100) continue;
-            if (/^Подразделени/i.test(t)) return all[k];
-          }
           return null;
+        }
+
+        function fullClick(el) {
+          // Vue/Angular ba'zan focus + mousedown + click ketma-ketligini kutadi
+          try { el.focus && el.focus(); } catch(e) {}
+          var rect = el.getBoundingClientRect();
+          var opts = { bubbles: true, cancelable: true, view: window, clientX: rect.left+5, clientY: rect.top+5 };
+          el.dispatchEvent(new MouseEvent('mousedown', opts));
+          el.dispatchEvent(new MouseEvent('mouseup', opts));
+          el.dispatchEvent(new MouseEvent('click', opts));
         }
 
         var trigger = findTrigger();
@@ -165,8 +168,15 @@ async function ensureAllSubdivisionsChecked(session: BrowserSession): Promise<vo
 
         trigger.scrollIntoView({ block: 'center' });
         await sleep(300);
-        trigger.click();
-        await sleep(3000); // popup'ning to'liq ochilishi uchun ko'proq vaqt
+        fullClick(trigger);
+        await sleep(2000);
+        // ba'zi UI'larda input click — popup, lekin tashqaridagi click yopadi.
+        // Yana 1 marta bosamiz agar checkboxlar ko'rinmasa
+        var initialCbCount = document.querySelectorAll('input[type="checkbox"]:not(:disabled)').length;
+        if (initialCbCount === 0) {
+          fullClick(trigger);
+          await sleep(2000);
+        }
 
         // Real <input type=checkbox> + custom Vue/Antd checkbox'larni topish
         var allCbs = Array.from(document.querySelectorAll(
