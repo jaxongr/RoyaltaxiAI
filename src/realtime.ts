@@ -242,10 +242,19 @@ async function ensureAllSubdivisionsChecked(session: BrowserSession): Promise<vo
       return;
     }
     if (result.ok && (result.totalCheckboxes ?? 0) === 0) {
-      logger.warn(
-        { result },
-        'Подразделение UI: trigger bosilgan, lekin checkbox topilmadi (popup ochilmadi yoki boshqacha)',
-      );
+      // Debug: page'ning HTML'ini dump qilamiz keyingi tahlil uchun
+      try {
+        const html = await page.content();
+        const fs = await import('node:fs');
+        const dumpPath = `/tmp/archive-page-dump-${Date.now()}.html`;
+        fs.writeFileSync(dumpPath, html);
+        logger.warn(
+          { result, dumpPath, htmlLen: html.length },
+          'Подразделение UI: checkbox topilmadi — HTML dump saqlandi tahlil uchun',
+        );
+      } catch (e) {
+        logger.warn({ result, dumpErr: (e as Error).message }, 'Подразделение UI: checkbox topilmadi (dump xato)');
+      }
       return;
     }
 
