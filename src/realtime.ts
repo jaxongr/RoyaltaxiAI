@@ -260,21 +260,75 @@ async function ensureAllSubdivisionsChecked(session: BrowserSession): Promise<vo
 
         var checkboxes = Array.from(document.querySelectorAll('.checkbox_unchecked, .checkbox_checked'));
 
+        // OFFICE ID EXTRACTION: popup ochilganda, har bir checkbox'ning parent ichida
+        // officeId saqlanadi (data-* atributlarda yoki HTML attributesda).
+        // Bu officeId'larni getOrders'ga explicit uzatish — saved filter'ni bypass qiladi.
+        var extractedOfficeIds = [];
+        var seenIds = {};
+        // Avvalo har bir popup item elementini tekshiramiz
+        var allPopupItems = document.querySelectorAll('.sub-item, .item-container, .item');
+        for (var pi=0; pi<allPopupItems.length; pi++) {
+          var item = allPopupItems[pi];
+          var attrs = item.attributes;
+          for (var ai=0; ai<attrs.length; ai++) {
+            var val = attrs[ai].value;
+            if (/^\\d{15,20}$/.test(val) && !seenIds[val]) {
+              seenIds[val] = true;
+              extractedOfficeIds.push(val);
+            }
+          }
+        }
+        // HTML-da JSON pattern ham qidiramiz
+        var bodyHtml = document.body.innerHTML;
+        var re = /"officeId"\\s*:\\s*"?(\\d{15,20})"?/g;
+        var match;
+        while ((match = re.exec(bodyHtml)) !== null) {
+          if (!seenIds[match[1]]) {
+            seenIds[match[1]] = true;
+            extractedOfficeIds.push(match[1]);
+          }
+        }
+
+        // SAVE: popup'ni yopish va change event'ini commit qilish.
+        // Vue/Angular ko'p hollarda OUTSIDE CLICK + ESC + blur orqali saqlanadi.
+        // 1) "Применить" tugmasi (agar bor)
         var allBtns = Array.from(document.querySelectorAll('button, [role="button"]'));
         var applyBtn = null;
         for (var m=0; m<allBtns.length; m++) {
           var txt = (allBtns[m].textContent || '').trim();
           if (/Применить|Apply|Saqlash|Saqla|^OK$/i.test(txt)) { applyBtn = allBtns[m]; break; }
         }
-        if (applyBtn) { applyBtn.click(); await sleep(500); }
-        else { document.body.click(); await sleep(300); }
+        if (applyBtn) {
+          fullClick(applyBtn);
+          await sleep(800);
+        }
+
+        // 2) Outside click — page corner'da bosish (popup'ni yopadi va commit qiladi)
+        var corner = document.elementFromPoint(10, 10);
+        if (corner) fullClick(corner);
+        await sleep(400);
+
+        // 3) Trigger element'da blur + change event (Vue reactivity uchun)
+        try {
+          if (typeof trigger.dispatchEvent === 'function') {
+            trigger.dispatchEvent(new Event('change', { bubbles: true }));
+            trigger.dispatchEvent(new Event('blur', { bubbles: true }));
+            trigger.dispatchEvent(new Event('input', { bubbles: true }));
+          }
+        } catch(e) {}
+        await sleep(500);
+
+        // 4) ESC tugmasi bilan ham popup'ni yopish (xavfsizlik)
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
+        await sleep(300);
 
         return {
           ok: true,
           totalCheckboxes: checkboxes.length,
           newlyChecked: checkedCount,
           alreadyChecked: alreadyChecked,
-          names: checkedNames
+          names: checkedNames,
+          officeIds: extractedOfficeIds
         };
       })()
     `;
@@ -286,7 +340,22 @@ async function ensureAllSubdivisionsChecked(session: BrowserSession): Promise<vo
       newlyChecked?: number;
       alreadyChecked?: number;
       names?: string[];
+      officeIds?: string[];
     };
+
+    // Agar UI'dan officeId'lar topilgan bo'lsa, accessibleOfficeIds'ga saqlaymiz
+    // (keyingi getOrders chaqiriqlarida explicit officeIds: [...] ishlatiladi)
+    if (result.officeIds && result.officeIds.length > 0) {
+      const ids = result.officeIds.map(Number).filter((n) => !isNaN(n));
+      if (ids.length > 0) {
+        accessibleOfficeIds = ids;
+        accessibleOfficesRefreshedAt = Date.now();
+        logger.info(
+          { count: ids.length },
+          `🏢 UI'dan ${ids.length} ta officeId topildi — getOrders'da explicit uzatiladi`,
+        );
+      }
+    }
 
     if (!result.ok && result.reason === 'trigger-not-found') {
       logger.warn(
