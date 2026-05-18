@@ -1685,15 +1685,43 @@ const ROUTES: Record<string, (q: URLSearchParams) => unknown> = {
   },
 
   '/api/sites': () => {
+    const today = new Date(Date.now() + 5*3600*1000).toISOString().slice(0, 10);
     const items = db
       .prepare(
-        `SELECT id, name, base_url, username,
-                CASE WHEN length(password) > 0 THEN '***' ELSE '' END as password_mask,
-                is_active, use_proxy, note, created_at, updated_at
-         FROM site_credentials
-         ORDER BY is_active DESC, id ASC`,
+        `SELECT s.id, s.name, s.base_url, s.username,
+                CASE WHEN length(s.password) > 0 THEN '***' ELSE '' END as password_mask,
+                s.is_active, s.use_proxy,
+                COALESCE(s.auto_select_all, 1) as auto_select_all,
+                s.note, s.created_at, s.updated_at,
+                ms.last_tick_at, ms.tick_count, ms.site_total_today, ms.our_count_today,
+                (SELECT COUNT(*) FROM orders WHERE site_id = s.id AND date = ?) as orders_today,
+                (SELECT COUNT(*) FROM fraud_alerts WHERE site_id = s.id AND date(created_at) = ?) as alerts_today
+         FROM site_credentials s
+         LEFT JOIN site_monitor_state ms ON ms.site_id = s.id
+         ORDER BY s.is_active DESC, s.id ASC`,
       )
-      .all();
+      .all(today, today) as Array<{
+        id: number;
+        is_active: number;
+        last_tick_at: string | null;
+        [k: string]: unknown;
+      }>;
+
+    // Running status — pid mavjudligi va exitCode==null
+    const runningIds = new Set<number>();
+    for (const [siteId, m] of monitors.entries()) {
+      if (m.proc.pid != null && m.proc.exitCode === null) runningIds.add(siteId);
+    }
+    for (const it of items) {
+      it.running = runningIds.has(it.id);
+      // last_tick_at dan sekund'lar farqi
+      if (it.last_tick_at) {
+        const ts = Date.parse(it.last_tick_at);
+        it.seconds_since_tick = isNaN(ts) ? null : Math.round((Date.now() - ts) / 1000);
+      } else {
+        it.seconds_since_tick = null;
+      }
+    }
     return { items };
   },
 
@@ -2501,10 +2529,14 @@ const server = createServer(async (req, res) => {
         }
         const r = db
           .prepare(
-            `INSERT INTO site_credentials (name, base_url, username, password, note, use_proxy)
-             VALUES (?, ?, ?, ?, ?, ?)`,
+            `INSERT INTO site_credentials (name, base_url, username, password, note, use_proxy, auto_select_all)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
           )
-          .run(body.name, body.base_url, body.username, body.password, body.note ?? '', body.use_proxy === false ? 0 : 1);
+          .run(
+            body.name, body.base_url, body.username, body.password, body.note ?? '',
+            body.use_proxy === false ? 0 : 1,
+            body.auto_select_all === false ? 0 : 1,
+          );
         db.prepare(
           `INSERT INTO audit_log (action, target_type, target_id, actor) VALUES ('site_add', 'site', ?, 'web')`,
         ).run(String(r.lastInsertRowid));
@@ -2518,7 +2550,7 @@ const server = createServer(async (req, res) => {
         const id = parseInt(updateMatch[1]!, 10);
         const sets: string[] = [];
         const vals: unknown[] = [];
-        for (const f of ['name', 'base_url', 'username', 'password', 'note', 'use_proxy']) {
+        for (const f of ['name', 'base_url', 'username', 'password', 'note', 'use_proxy', 'auto_select_all']) {
           if (body[f] !== undefined) {
             // Parol uchun: bo'sh string bo'lsa, eskini saqlaymiz (yangilamaymiz)
             if (f === 'password' && (body[f] === '' || body[f] === null)) continue;
