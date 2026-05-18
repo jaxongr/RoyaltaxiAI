@@ -178,54 +178,57 @@ async function ensureAllSubdivisionsChecked(session: BrowserSession): Promise<vo
           await sleep(2000);
         }
 
-        // Real <input type=checkbox> + custom Vue/Antd checkbox'larni topish
-        var allCbs = Array.from(document.querySelectorAll(
-          'input[type="checkbox"], [role="checkbox"], .hv-checkbox, [class*="checkbox"], [class*="check-item"]'
-        ));
-        var seen = new Set();
-        var checkboxes = [];
-        for (var j=0; j<allCbs.length; j++) {
-          var el = allCbs[j];
-          var r = el.getBoundingClientRect();
-          if (r.width === 0 || r.height === 0) continue;
-          // bir xil elementning bir necha proksisini olib qolmaslik
-          var key = (el.id || '') + '|' + (el.className || '') + '|' + r.top + '|' + r.left;
-          if (seen.has(key)) continue;
-          seen.add(key);
-          checkboxes.push(el);
-        }
+        // HiveTaxi custom checkbox: .checkbox_unchecked / .checkbox_checked
+        // Plus standard input[type=checkbox] fallback
+        var uncheckedEls = Array.from(document.querySelectorAll('.checkbox_unchecked'));
+        var checkedEls = Array.from(document.querySelectorAll('.checkbox_checked'));
+        var stdCheckboxes = Array.from(document.querySelectorAll('input[type="checkbox"]:not(:disabled)'));
 
-        function isChecked(el) {
-          if (el.tagName === 'INPUT') return !!el.checked;
-          var ariaCh = el.getAttribute('aria-checked');
-          if (ariaCh === 'true') return true;
-          if (ariaCh === 'false') return false;
-          // class'da "checked" bormi
-          if (/(^|\s)(checked|active|selected)(\s|$)/.test(el.className || '')) return true;
-          // ichida tick icon yoki active class
-          if (el.querySelector('.checked, .active, [class*="checked"]')) return true;
-          return false;
+        function getItemText(el) {
+          // Eng yaqin .item-text yoki sub-item ichidagi matn
+          var container = el.closest('.sub-item, .item, .item-container, [class*="item"]');
+          if (container) {
+            var t = container.querySelector('.item-text');
+            if (t) return (t.textContent || '').trim();
+          }
+          var parent = el.parentElement;
+          if (parent) {
+            var t2 = (parent.textContent || '').trim();
+            if (t2) return t2;
+          }
+          return '';
         }
 
         var checkedCount = 0;
-        var alreadyChecked = 0;
+        var alreadyChecked = checkedEls.length;
         var checkedNames = [];
-        for (var k=0; k<checkboxes.length; k++) {
-          var cb = checkboxes[k];
-          if (!isChecked(cb)) {
-            cb.click();
+
+        // Custom HiveTaxi checkboxes
+        for (var u=0; u<uncheckedEls.length; u++) {
+          var cb = uncheckedEls[u];
+          var name = getItemText(cb);
+          fullClick(cb);
+          await sleep(150);
+          checkedCount++;
+          if (name) checkedNames.push(name.slice(0, 80));
+        }
+
+        // Standard <input type=checkbox> (agar bor bo'lsa)
+        for (var s=0; s<stdCheckboxes.length; s++) {
+          var sc = stdCheckboxes[s];
+          if (!sc.checked) {
+            fullClick(sc);
             await sleep(100);
             checkedCount++;
-            var parentLabel = cb.closest('label');
-            var labelText = parentLabel ? parentLabel.textContent
-                          : (cb.nextElementSibling ? cb.nextElementSibling.textContent
-                          : (cb.parentElement ? cb.parentElement.textContent : ''));
-            var label = (labelText || '').trim();
-            if (label) checkedNames.push(label.slice(0, 50));
+            var lbl = sc.closest('label');
+            var lt = lbl ? lbl.textContent : (sc.parentElement ? sc.parentElement.textContent : '');
+            if (lt) checkedNames.push((lt || '').trim().slice(0, 80));
           } else {
             alreadyChecked++;
           }
         }
+
+        var checkboxes = uncheckedEls.concat(checkedEls).concat(stdCheckboxes);
 
         var allBtns = Array.from(document.querySelectorAll('button, [role="button"]'));
         var applyBtn = null;
