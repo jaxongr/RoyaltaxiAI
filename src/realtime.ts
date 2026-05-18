@@ -184,30 +184,12 @@ async function ensureAllSubdivisionsChecked(session: BrowserSession): Promise<vo
           await sleep(2000);
         }
 
-        // Popup ichidagi scroll container — toplama scroll qilamiz uchun ko'proq
-        // checkbox'larni virtual list ham yuklasin
-        var popupContainers = Array.from(document.querySelectorAll('[class*="popup"], [class*="dropdown"], [class*="select"], [class*="options"], [class*="list"]'));
-        for (var pp=0; pp<popupContainers.length; pp++) {
-          try {
-            var pc = popupContainers[pp];
-            if (pc.scrollHeight > pc.clientHeight) {
-              pc.scrollTop = pc.scrollHeight; // pastga scroll
-              await sleep(200);
-              pc.scrollTop = 0; // qaytadan tepa
-              await sleep(200);
-            }
-          } catch(e) {}
-        }
-
-        // HiveTaxi custom checkbox: .checkbox_unchecked / .checkbox_checked
-        // Plus standard input[type=checkbox] fallback
-        // OFF-SCREEN ham olamiz (popup scroll'da yashiringan bo'lishi mumkin)
-        var uncheckedEls = Array.from(document.querySelectorAll('.checkbox_unchecked'));
-        var checkedEls = Array.from(document.querySelectorAll('.checkbox_checked'));
-        var stdCheckboxes = Array.from(document.querySelectorAll('input[type="checkbox"]:not(:disabled)'));
+        // SAYT UI: "Выбрать все" ("Select all") tugmasi popup yuqorisida turadi.
+        // U bittaligini bossangiz BARCHA checkbox'lar birdaniga belgilanadi.
+        // Eski yondashuv (har bir cb ni bosish) noto'g'ri edi — "Выбрать все"dan
+        // keyin har bir cb ni bosish ularni TOGGLE qilib o'chirib qo'yadi.
 
         function getItemText(el) {
-          // Eng yaqin .item-text yoki sub-item ichidagi matn
           var container = el.closest('.sub-item, .item, .item-container, [class*="item"]');
           if (container) {
             var t = container.querySelector('.item-text');
@@ -221,36 +203,56 @@ async function ensureAllSubdivisionsChecked(session: BrowserSession): Promise<vo
           return '';
         }
 
-        var checkedCount = 0;
-        var alreadyChecked = checkedEls.length;
-        var checkedNames = [];
-
-        // Custom HiveTaxi checkboxes
-        for (var u=0; u<uncheckedEls.length; u++) {
-          var cb = uncheckedEls[u];
-          var name = getItemText(cb);
-          fullClick(cb);
-          await sleep(150);
-          checkedCount++;
-          if (name) checkedNames.push(name.slice(0, 80));
-        }
-
-        // Standard <input type=checkbox> (agar bor bo'lsa)
-        for (var s=0; s<stdCheckboxes.length; s++) {
-          var sc = stdCheckboxes[s];
-          if (!sc.checked) {
-            fullClick(sc);
-            await sleep(100);
-            checkedCount++;
-            var lbl = sc.closest('label');
-            var lt = lbl ? lbl.textContent : (sc.parentElement ? sc.parentElement.textContent : '');
-            if (lt) checkedNames.push((lt || '').trim().slice(0, 80));
-          } else {
-            alreadyChecked++;
+        // 1) Avval "Выбрать все" (Select All) elementini topamiz
+        var selectAllEl = null;
+        var allItems = Array.from(document.querySelectorAll('.item-text, .checkbox_unchecked, .checkbox_checked, [class*="item"]'));
+        for (var sa=0; sa<allItems.length; sa++) {
+          var txt = (allItems[sa].textContent || '').trim();
+          if (/^(Выбрать все|Select all|Hammasini)/i.test(txt)) {
+            // ITEM-TEXT bo'lsa, uning parent container'ini olamiz (clickable)
+            selectAllEl = allItems[sa].closest('.item-container, [class*="item"], .sub-item') || allItems[sa];
+            break;
           }
         }
 
-        var checkboxes = uncheckedEls.concat(checkedEls).concat(stdCheckboxes);
+        var checkedCount = 0;
+        var alreadyChecked = 0;
+        var checkedNames = [];
+        var totalCheckboxesBefore = document.querySelectorAll('.checkbox_unchecked, .checkbox_checked').length;
+        var uncheckedBefore = document.querySelectorAll('.checkbox_unchecked').length;
+
+        if (selectAllEl) {
+          // "Выбрать все" topildi — bossak hammasi belgilanadi.
+          // Avval current holatini tekshiramiz: shu container'da .checkbox_unchecked bormi?
+          var saCheckbox = selectAllEl.querySelector('.checkbox_unchecked, .checkbox_checked')
+                         || selectAllEl;
+          var saIsChecked = !!selectAllEl.querySelector('.checkbox_checked')
+                          || /checked/.test((saCheckbox.className || ''));
+
+          if (!saIsChecked && uncheckedBefore > 0) {
+            // Bossak hammasi yoqiladi
+            fullClick(selectAllEl);
+            await sleep(800); // boshqa checkbox'lar ham yangilanishi uchun
+            checkedCount = uncheckedBefore;
+            checkedNames.push('Выбрать все (' + uncheckedBefore + ' ta belgilandi)');
+          } else {
+            alreadyChecked = totalCheckboxesBefore;
+            checkedNames.push('Выбрать все (allaqachon belgilangan)');
+          }
+        } else {
+          // Fallback: agar "Выбрать все" topilmasa, eski usulda har birini bosish
+          var uncheckedEls = Array.from(document.querySelectorAll('.checkbox_unchecked'));
+          for (var u=0; u<uncheckedEls.length; u++) {
+            var name = getItemText(uncheckedEls[u]);
+            fullClick(uncheckedEls[u]);
+            await sleep(150);
+            checkedCount++;
+            if (name) checkedNames.push(name.slice(0, 80));
+          }
+          alreadyChecked = document.querySelectorAll('.checkbox_checked').length;
+        }
+
+        var checkboxes = Array.from(document.querySelectorAll('.checkbox_unchecked, .checkbox_checked'));
 
         var allBtns = Array.from(document.querySelectorAll('button, [role="button"]'));
         var applyBtn = null;
