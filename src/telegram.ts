@@ -338,7 +338,7 @@ export async function sendDailyReport(r: DailyReportPayload): Promise<boolean> {
   return sendTelegram(lines.join('\n'));
 }
 
-export async function sendHeartbeat(stats: {
+export async function sendHeartbeat(_stats: {
   uptimeMin: number;
   ticks: number;
   ordersProcessed: number;
@@ -346,19 +346,9 @@ export async function sendHeartbeat(stats: {
   blocksToday: number;
   lastError?: string;
 }): Promise<boolean> {
-  const msg = [
-    '💚 <b>Monitor jonli</b>',
-    '',
-    `⏱ Uptime: ${stats.uptimeMin} daqiqa`,
-    `🔄 Tick: ${stats.ticks}`,
-    `📦 Ko'rilgan zakaz: ${stats.ordersProcessed}`,
-    `⚠️ Bugungi alert: ${stats.alertsToday}`,
-    `🚨 Bugungi blok tavsiya: ${stats.blocksToday}`,
-  ];
-  if (stats.lastError) msg.push('', `❌ Oxirgi xato: ${stats.lastError}`);
-  // Faqat admin — texnik heartbeat
-  const r = await broadcast(msg.join('\n'), { type: 'admin_only' });
-  return r.sent > 0;
+  // Foydalanuvchi so'roviga ko'ra "Monitor jonli" bildirishnomalari o'chirilgan.
+  // Statistika dashboard'da ko'rinadi.
+  return false;
 }
 
 export function isTelegramConfigured(): boolean {
