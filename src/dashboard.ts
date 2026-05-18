@@ -675,6 +675,7 @@ const ROUTES: Record<string, (q: URLSearchParams) => unknown> = {
         SUM(CASE WHEN fraud_score >= 50 THEN 1 ELSE 0 END) as alerts
       FROM orders
       WHERE date = ? AND region != '' AND region IS NOT NULL
+        AND region NOT IN (SELECT name FROM region_blacklist)
       GROUP BY region
       ORDER BY orders DESC
     `).all(t) as Array<Record<string, unknown>>;
@@ -2694,6 +2695,44 @@ const server = createServer(async (req, res) => {
       send(res, 500, { ok: false, error: (err as Error).message });
       return;
     }
+  }
+
+  // Region blacklist — noto'g'ri parse bo'lgan region nomini bloklash
+  // POST /api/region/blacklist { name: "Yoshlar ko'chasi" } → orders.region='' qiladi
+  if (req.method === 'POST' && path === '/api/region/blacklist') {
+    try {
+      const chunks: Buffer[] = [];
+      await new Promise<void>((resolve, reject) => {
+        req.on('data', (c) => chunks.push(c as Buffer));
+        req.on('end', () => resolve());
+        req.on('error', reject);
+      });
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf-8') || '{}') as { name?: string };
+      const name = (body.name ?? '').trim();
+      if (!name) { send(res, 400, { ok: false, error: 'name kerak' }); return; }
+      db.prepare(`INSERT OR IGNORE INTO region_blacklist (name) VALUES (?)`).run(name);
+      // Mavjud zakazlarni ham bo'shga chiqaramiz
+      const upd = db.prepare(`UPDATE orders SET region = '' WHERE region = ?`).run(name);
+      send(res, 200, { ok: true, name, updatedOrders: upd.changes });
+    } catch (err) {
+      send(res, 500, { ok: false, error: (err as Error).message });
+    }
+    return;
+  }
+
+  // GET /api/region/blacklist — barcha bloklangan region'lar ro'yxati
+  if (req.method === 'GET' && path === '/api/region/blacklist') {
+    const rows = db.prepare(`SELECT name, blocked_at FROM region_blacklist ORDER BY blocked_at DESC`).all();
+    send(res, 200, { items: rows });
+    return;
+  }
+
+  // DELETE /api/region/blacklist/:name — bloklashni bekor qilish
+  if (req.method === 'DELETE' && path.startsWith('/api/region/blacklist/')) {
+    const name = decodeURIComponent(path.slice('/api/region/blacklist/'.length));
+    db.prepare(`DELETE FROM region_blacklist WHERE name = ?`).run(name);
+    send(res, 200, { ok: true });
+    return;
   }
 
   // Site-unblock: saytda haydovchini blokdan chiqarish

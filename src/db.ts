@@ -130,6 +130,11 @@ const MIGRATIONS = [
   "ALTER TABLE site_credentials ADD COLUMN use_proxy INTEGER DEFAULT 1",
   // Duplicate alert oldini olish — bir order_id uchun faqat bitta fraud_alert
   "CREATE UNIQUE INDEX IF NOT EXISTS idx_fraud_alerts_order_unique ON fraud_alerts(order_id)",
+  // Region blacklist — noto'g'ri parse bo'lgan ko'cha/mahalla nomlarini bloklash
+  `CREATE TABLE IF NOT EXISTS region_blacklist (
+    name TEXT PRIMARY KEY,
+    blocked_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`,
   // Performance indexlar — 500K+ order uchun kerak
   "CREATE INDEX IF NOT EXISTS idx_orders_date_region ON orders(date, region)",
   "CREATE INDEX IF NOT EXISTS idx_orders_date_callsign ON orders(date, callsign)",
