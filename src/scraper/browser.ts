@@ -6,7 +6,10 @@ import { childLogger } from '../common/logger.js';
 
 const log = childLogger('browser');
 
-export const STORAGE_STATE_PATH = resolve(process.cwd(), 'storage-state.json');
+// Storage state path env orqali override qilinishi mumkin (multi-site monitor uchun)
+export const STORAGE_STATE_PATH = process.env.STORAGE_STATE_PATH
+  ? resolve(process.env.STORAGE_STATE_PATH)
+  : resolve(process.cwd(), 'storage-state.json');
 
 export interface BrowserSession {
   browser: Browser;

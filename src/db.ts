@@ -80,6 +80,33 @@ CREATE TABLE IF NOT EXISTS monitor_state (
   last_error TEXT
 );
 INSERT OR IGNORE INTO monitor_state (id) VALUES (1);
+
+CREATE TABLE IF NOT EXISTS site_monitor_state (
+  site_id INTEGER PRIMARY KEY,
+  last_tick_at TEXT,
+  tick_count INTEGER DEFAULT 0,
+  site_total_today INTEGER DEFAULT 0,
+  our_count_today INTEGER DEFAULT 0,
+  started_at TEXT,
+  consecutive_errors INTEGER DEFAULT 0,
+  last_error TEXT
+);
+
+CREATE TABLE IF NOT EXISTS telegram_users (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  chat_id TEXT NOT NULL UNIQUE,
+  full_name TEXT,
+  username TEXT,
+  role TEXT DEFAULT 'viewer',
+  regions TEXT,
+  receive_alerts INTEGER DEFAULT 1,
+  receive_daily_report INTEGER DEFAULT 1,
+  receive_no_orders_alert INTEGER DEFAULT 1,
+  is_active INTEGER DEFAULT 1,
+  note TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
 `;
 
 const MIGRATIONS = [
@@ -98,6 +125,18 @@ const MIGRATIONS = [
   "ALTER TABLE orders ADD COLUMN cancel_kind TEXT",
   "ALTER TABLE orders ADD COLUMN cancel_comment TEXT",
   "ALTER TABLE orders ADD COLUMN false_positive INTEGER DEFAULT 0",
+  "ALTER TABLE orders ADD COLUMN site_id INTEGER",
+  "ALTER TABLE fraud_alerts ADD COLUMN site_id INTEGER",
+  "ALTER TABLE site_credentials ADD COLUMN use_proxy INTEGER DEFAULT 1",
+  // Performance indexlar — 500K+ order uchun kerak
+  "CREATE INDEX IF NOT EXISTS idx_orders_date_region ON orders(date, region)",
+  "CREATE INDEX IF NOT EXISTS idx_orders_date_callsign ON orders(date, callsign)",
+  "CREATE INDEX IF NOT EXISTS idx_orders_phone_date ON orders(client_phone, date)",
+  "CREATE INDEX IF NOT EXISTS idx_orders_status_date ON orders(status, date)",
+  "CREATE INDEX IF NOT EXISTS idx_orders_cancel_date ON orders(cancel_kind, date) WHERE cancel_kind IS NOT NULL",
+  "CREATE INDEX IF NOT EXISTS idx_orders_callsign_date ON orders(callsign, date)",
+  "CREATE INDEX IF NOT EXISTS idx_orders_site_date ON orders(site_id, date)",
+  "CREATE INDEX IF NOT EXISTS idx_orders_amount ON orders(amount) WHERE amount > 0",
 ];
 
 const NEW_TABLES = `
@@ -220,6 +259,10 @@ export function openDb(): Database.Database {
   const db = new Database(DB_PATH);
   db.pragma('journal_mode = WAL');
   db.pragma('synchronous = NORMAL');
+  db.pragma('cache_size = -524288'); // 512 MB sahifa kesh (sekin queries uchun)
+  db.pragma('temp_store = MEMORY');
+  db.pragma('mmap_size = 1073741824'); // 1 GB memory-mapped IO
+  db.pragma('wal_autocheckpoint = 1000'); // 1000 sahifaga yetganda checkpoint
   db.exec(SCHEMA);
   db.exec(NEW_TABLES);
   // idempotent migrations — ignore "duplicate column" errors
@@ -233,24 +276,33 @@ export function openDb(): Database.Database {
       }
     }
   }
+  // Default admin user — env'dagi TELEGRAM_CHAT_ID
+  const envChatId = process.env.TELEGRAM_CHAT_ID;
+  if (envChatId) {
+    db.prepare(
+      `INSERT OR IGNORE INTO telegram_users (chat_id, full_name, role, regions, receive_alerts, receive_daily_report, receive_no_orders_alert, is_active, note)
+       VALUES (?, 'Bosh Admin', 'admin', NULL, 1, 1, 1, 1, ?)`,
+    ).run(envChatId, '.env default admin');
+  }
   log.info({ path: DB_PATH }, 'DB tayyor');
   return db;
 }
 
 export function insertOrder(db: Database.Database, o: OrderRow): 'inserted' | 'skipped' {
+  const siteId = process.env.SITE_ID ? parseInt(process.env.SITE_ID, 10) : null;
   const stmt = db.prepare(`
     INSERT OR IGNORE INTO orders
       (order_id, callsign, date, time, region, service, tariff, address, driver_name, car,
        client_phone, driver_phones, amount, distance_km, status, raw_text,
        is_driver_crook, submission_time, finish_time, duration_sec,
-       source, cancel_kind, cancel_comment)
+       source, cancel_kind, cancel_comment, site_id)
     VALUES
       (@order_id, @callsign, @date, @time, @region, @service, @tariff, @address, @driver_name, @car,
        @client_phone, @driver_phones, @amount, @distance_km, @status, @raw_text,
        @is_driver_crook, @submission_time, @finish_time, @duration_sec,
-       @source, @cancel_kind, @cancel_comment)
+       @source, @cancel_kind, @cancel_comment, @site_id)
   `);
-  const res = stmt.run(o);
+  const res = stmt.run({ ...o, site_id: siteId });
   return res.changes > 0 ? 'inserted' : 'skipped';
 }
 
@@ -264,10 +316,11 @@ export interface FraudAlert {
 }
 
 export function insertAlert(db: Database.Database, a: FraudAlert): void {
+  const siteId = process.env.SITE_ID ? parseInt(process.env.SITE_ID, 10) : null;
   db.prepare(
-    `INSERT INTO fraud_alerts (order_id, callsign, driver_name, fraud_type, fraud_score, details)
-     VALUES (@order_id, @callsign, @driver_name, @fraud_type, @fraud_score, @details)`,
-  ).run(a);
+    `INSERT INTO fraud_alerts (order_id, callsign, driver_name, fraud_type, fraud_score, details, site_id)
+     VALUES (@order_id, @callsign, @driver_name, @fraud_type, @fraud_score, @details, @site_id)`,
+  ).run({ ...a, site_id: siteId });
 }
 
 export function markOrderFraud(
@@ -317,6 +370,33 @@ export function updateMonitorState(
     vals.push(patch.lastError);
   }
   db.prepare(`UPDATE monitor_state SET ${parts.join(', ')} WHERE id = 1`).run(...vals);
+
+  // Per-site monitor state (SITE_ID env'dan)
+  const siteIdStr = process.env.SITE_ID;
+  if (siteIdStr) {
+    const siteId = parseInt(siteIdStr, 10);
+    if (!isNaN(siteId)) {
+      db.prepare(
+        `INSERT INTO site_monitor_state (site_id, last_tick_at, tick_count, started_at)
+         VALUES (?, CURRENT_TIMESTAMP, ?, ?)
+         ON CONFLICT(site_id) DO UPDATE SET
+           last_tick_at = CURRENT_TIMESTAMP,
+           tick_count = tick_count + ${patch.tickIncrement ? 1 : 0},
+           site_total_today = COALESCE(?, site_total_today),
+           our_count_today = COALESCE(?, our_count_today),
+           consecutive_errors = COALESCE(?, consecutive_errors),
+           last_error = COALESCE(?, last_error)`,
+      ).run(
+        siteId,
+        patch.tickIncrement ? 1 : 0,
+        patch.startedAt ?? null,
+        patch.siteTotalToday ?? null,
+        patch.ourCountToday ?? null,
+        patch.consecutiveErrors ?? null,
+        patch.lastError ?? null,
+      );
+    }
+  }
 }
 
 export function upsertDriverBlock(
