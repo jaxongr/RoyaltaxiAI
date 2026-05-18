@@ -155,13 +155,35 @@ async function ensureAllSubdivisionsChecked(session: BrowserSession): Promise<vo
         trigger.scrollIntoView({ block: 'center' });
         await sleep(300);
         trigger.click();
-        await sleep(1500);
+        await sleep(3000); // popup'ning to'liq ochilishi uchun ko'proq vaqt
 
-        var allCbs = Array.from(document.querySelectorAll('input[type="checkbox"]'));
+        // Real <input type=checkbox> + custom Vue/Antd checkbox'larni topish
+        var allCbs = Array.from(document.querySelectorAll(
+          'input[type="checkbox"], [role="checkbox"], .hv-checkbox, [class*="checkbox"], [class*="check-item"]'
+        ));
+        var seen = new Set();
         var checkboxes = [];
         for (var j=0; j<allCbs.length; j++) {
-          var r = allCbs[j].getBoundingClientRect();
-          if (r.width > 0 && r.height > 0) checkboxes.push(allCbs[j]);
+          var el = allCbs[j];
+          var r = el.getBoundingClientRect();
+          if (r.width === 0 || r.height === 0) continue;
+          // bir xil elementning bir necha proksisini olib qolmaslik
+          var key = (el.id || '') + '|' + (el.className || '') + '|' + r.top + '|' + r.left;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          checkboxes.push(el);
+        }
+
+        function isChecked(el) {
+          if (el.tagName === 'INPUT') return !!el.checked;
+          var ariaCh = el.getAttribute('aria-checked');
+          if (ariaCh === 'true') return true;
+          if (ariaCh === 'false') return false;
+          // class'da "checked" bormi
+          if (/(^|\s)(checked|active|selected)(\s|$)/.test(el.className || '')) return true;
+          // ichida tick icon yoki active class
+          if (el.querySelector('.checked, .active, [class*="checked"]')) return true;
+          return false;
         }
 
         var checkedCount = 0;
@@ -169,7 +191,7 @@ async function ensureAllSubdivisionsChecked(session: BrowserSession): Promise<vo
         var checkedNames = [];
         for (var k=0; k<checkboxes.length; k++) {
           var cb = checkboxes[k];
-          if (!cb.checked) {
+          if (!isChecked(cb)) {
             cb.click();
             await sleep(100);
             checkedCount++;
