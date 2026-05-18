@@ -1,5 +1,6 @@
-import { Card, Table, Tag, Progress, Empty, Modal, Descriptions, Statistic, Row, Col } from 'antd';
-import { useQuery } from '@tanstack/react-query';
+import { Card, Table, Tag, Progress, Empty, Modal, Descriptions, Statistic, Row, Col, Button, Popconfirm, message } from 'antd';
+import { StopOutlined } from '@ant-design/icons';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { api, type RegionRow } from '../lib/api';
 import DriverDrawer from '../components/DriverDrawer';
@@ -7,6 +8,7 @@ import DriverDrawer from '../components/DriverDrawer';
 export default function RegionsPage(): JSX.Element {
   const [open, setOpen] = useState<string | null>(null);
   const [drvOpen, setDrvOpen] = useState<string | null>(null);
+  const qc = useQueryClient();
   const { data } = useQuery<{ items: RegionRow[] }>({
     queryKey: ['regions'],
     queryFn: () => api.get('/regions').then((r) => r.data),
@@ -14,6 +16,17 @@ export default function RegionsPage(): JSX.Element {
   });
   const items = data?.items ?? [];
   const max = Math.max(...items.map((r) => r.orders), 1);
+
+  const blockMut = useMutation({
+    mutationFn: (name: string) => api.post('/region/blacklist', { name }),
+    onSuccess: (r, name) => {
+      const updated = (r.data as { updatedOrders?: number })?.updatedOrders ?? 0;
+      message.success(`"${name}" bloklandi (${updated} ta zakaz tozalandi)`);
+      qc.invalidateQueries({ queryKey: ['regions'] });
+    },
+    onError: (e: { response?: { data?: { error?: string } } }) =>
+      message.error(e.response?.data?.error ?? 'Xato'),
+  });
 
   return (
     <>
@@ -24,20 +37,23 @@ export default function RegionsPage(): JSX.Element {
           dataSource={items}
           pagination={false}
           locale={{ emptyText: <Empty /> }}
-          onRow={(r) => ({ onClick: () => setOpen(r.region), style: { cursor: 'pointer' } })}
           columns={[
             {
               title: 'Hudud',
               dataIndex: 'region',
-              render: (v) => <b>{v || '(noma\'lum)'}</b>,
-              width: 160,
+              render: (v) => (
+                <b style={{ cursor: 'pointer' }} onClick={() => setOpen(v)}>
+                  {v || '(noma\'lum)'}
+                </b>
+              ),
+              width: 200,
             },
             {
               title: 'Zakazlar',
               dataIndex: 'orders',
               width: 200,
-              render: (v) => (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              render: (v, r) => (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }} onClick={() => setOpen(r.region)}>
                   <Progress percent={(v / max) * 100} showInfo={false} strokeColor="#FC3F1D" style={{ flex: 1 }} />
                   <b style={{ minWidth: 50, textAlign: 'right' }}>{v}</b>
                 </div>
@@ -64,6 +80,23 @@ export default function RegionsPage(): JSX.Element {
               render: (v) => (v ? <Tag color="warning">{v}</Tag> : '0'),
             },
             { title: 'Top haydovchi', dataIndex: 'topDriver', ellipsis: true },
+            {
+              title: 'Amal',
+              width: 100,
+              render: (_, r) => (
+                <Popconfirm
+                  title="Bu hududni bloklash"
+                  description={`"${r.region}" hududini ro'yxatdan o'chirilsinmi? (ko'cha/mahalla nomli noto'g'ri hududlarni tozalash uchun)`}
+                  okText="Ha, blokla"
+                  cancelText="Yo'q"
+                  onConfirm={() => blockMut.mutate(r.region)}
+                >
+                  <Button danger size="small" icon={<StopOutlined />} loading={blockMut.isPending}>
+                    Blok
+                  </Button>
+                </Popconfirm>
+              ),
+            },
           ]}
         />
       </Card>

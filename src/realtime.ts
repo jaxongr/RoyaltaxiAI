@@ -99,6 +99,13 @@ async function refreshAccessibleOffices(session: BrowserSession): Promise<void> 
  * avtomatik belgilanadi.
  */
 async function ensureAllSubdivisionsChecked(session: BrowserSession): Promise<void> {
+  // AUTO_SELECT_ALL=0 bo'lsa, bu sayt uchun UI'ni qoldirib ketamiz.
+  // Ba'zi loginlar uchun default holatda hammasi ko'rinadi — UI'ga tegmaslik
+  // yaxshiroq (aks holda buzilishi mumkin).
+  if (process.env.AUTO_SELECT_ALL === '0') {
+    logger.info('Подразделение UI tekshiruvi o\'tkazib yuborildi (auto_select_all=0)');
+    return;
+  }
   const { page } = session;
   const archiveUrl = `${config.ROYALTAXI_BASE_URL}${URLS.archiveOrders}`;
   try {

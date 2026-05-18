@@ -15,6 +15,14 @@ import {
   UserOutlined,
   GlobalOutlined,
   ExclamationCircleOutlined,
+  LineChartOutlined,
+  CrownOutlined,
+  UserDeleteOutlined,
+  UserSwitchOutlined,
+  CompassOutlined,
+  CloseCircleOutlined,
+  CheckCircleOutlined,
+  RobotOutlined,
 } from '@ant-design/icons';
 import { useNavigate, useLocation, Outlet } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
@@ -28,6 +36,7 @@ const items = [
   { key: '/regions', icon: <EnvironmentOutlined />, label: 'Hududlar' },
   { key: '/drivers', icon: <CarOutlined />, label: 'Haydovchilar' },
   { key: '/drivers-full', icon: <UserOutlined />, label: 'Haydovchilar (to\'liq)' },
+  { key: '/driver-activity', icon: <CheckCircleOutlined />, label: 'Aktivlik / Retention' },
   { key: '/clients', icon: <TeamOutlined />, label: 'Mijozlar' },
   { key: '/alerts', icon: <WarningOutlined />, label: 'Ogohlantirishlar' },
   { key: '/violators', icon: <ExclamationCircleOutlined />, label: 'Qoida buzarlar' },
@@ -35,9 +44,16 @@ const items = [
   { key: '/blacklist', icon: <PhoneOutlined />, label: 'Qora ro\'yxat' },
   { key: '/orders', icon: <UnorderedListOutlined />, label: 'Zakazlar' },
   { key: '/stats', icon: <BarChartOutlined />, label: 'Statistika' },
+  { key: '/analytics', icon: <LineChartOutlined />, label: 'Analitika & Bashorat' },
+  { key: '/top-earners', icon: <CrownOutlined />, label: 'Top daromad' },
+  { key: '/retention', icon: <UserSwitchOutlined />, label: 'Retention' },
+  { key: '/client-blacklist', icon: <UserDeleteOutlined />, label: 'Mijoz qora ro\'yxati' },
+  { key: '/routes', icon: <CompassOutlined />, label: 'Yo\'nalishlar' },
+  { key: '/cancels', icon: <CloseCircleOutlined />, label: 'Bekor sabablari' },
   { key: '/reports', icon: <FileTextOutlined />, label: 'Hisobotlar' },
   { key: '/audit', icon: <AuditOutlined />, label: 'Audit log' },
   { key: '/sites', icon: <GlobalOutlined />, label: 'Saytlar' },
+  { key: '/telegram-users', icon: <RobotOutlined />, label: 'Bot foydalanuvchilar' },
   { key: '/settings', icon: <SettingOutlined />, label: 'Sozlamalar' },
 ];
 

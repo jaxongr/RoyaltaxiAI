@@ -1,5 +1,5 @@
-import { Card, Table, Tag, Button, App, Modal, Form, Input, Popconfirm, Empty } from 'antd';
-import { PlusOutlined, EditOutlined, DeleteOutlined, CheckCircleOutlined, GlobalOutlined } from '@ant-design/icons';
+import { Card, Table, Tag, Button, App, Modal, Form, Input, Popconfirm, Empty, Switch, Tooltip } from 'antd';
+import { PlusOutlined, EditOutlined, DeleteOutlined, CheckCircleOutlined, GlobalOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { api, fmtTime } from '../lib/api';
@@ -11,6 +11,7 @@ interface Site {
   username: string;
   password_mask: string;
   is_active: number;
+  use_proxy: number;
   note: string | null;
   created_at: string;
   updated_at: string;
@@ -23,6 +24,7 @@ interface SiteForm {
   username: string;
   password: string;
   note: string;
+  use_proxy: boolean;
 }
 
 export default function SitesPage(): JSX.Element {
@@ -54,10 +56,16 @@ export default function SitesPage(): JSX.Element {
 
   const activateMut = useMutation({
     mutationFn: (id: number) => api.post(`/sites/${id}/activate`),
-    onSuccess: () => {
-      message.success("Faollashtirildi — monitor qayta yoqilganda yangi credential ishlatadi");
+    onSuccess: (r: { data: { is_active?: number } }) => {
+      message.success(
+        r.data.is_active === 1
+          ? "Yoqildi — monitor 2 daqiqada ushbu sayt uchun ishga tushadi"
+          : "O'chirildi — monitor 2 daqiqada to'xtaydi",
+      );
       qc.invalidateQueries({ queryKey: ['sites'] });
     },
+    onError: (e: { response?: { data?: { error?: string } } }) =>
+      message.error(e.response?.data?.error ?? 'Xato'),
   });
 
   const deleteMut = useMutation({
@@ -73,6 +81,7 @@ export default function SitesPage(): JSX.Element {
     form.resetFields();
     form.setFieldsValue({
       base_url: 'https://hive-respublika-new.royaltaxi.uz',
+      use_proxy: true,
     });
     setModalOpen(true);
   };
@@ -86,6 +95,7 @@ export default function SitesPage(): JSX.Element {
       username: s.username,
       password: '',
       note: s.note ?? '',
+      use_proxy: s.use_proxy !== 0,
     });
     setModalOpen(true);
   };
@@ -110,9 +120,10 @@ export default function SitesPage(): JSX.Element {
       >
         <p style={{ color: '#6B7280', marginBottom: 12 }}>
           Bu yerda monitoring qiladigan saytlar va kirish ma'lumotlari saqlanadi.
-          <b> Faqat 1 ta sayt faol bo'la oladi</b>. Yangi credential qo'shganingizdan keyin
-          uni "<b>Faollashtirish</b>" tugmasi bilan tanlang. Monitor qayta yoqilganda
-          yangi credential bilan ishlay boshlaydi.
+          <b> 6 tagacha sayt birga (parallel) monitoring qilish mumkin</b>. Har FAOL sayt
+          uchun alohida Chromium sessiya ochiladi va zakazlar bir-biriga aralashmasdan yig'iladi.
+          Yoqish/o'chirish tugmasi bilan har bir saytni boshqaring — monitor 2 daqiqada
+          o'zi yangi holatga keladi.
         </p>
         <Table<Site>
           rowKey="id"
@@ -122,14 +133,14 @@ export default function SitesPage(): JSX.Element {
           locale={{ emptyText: <Empty description="Hali sayt qo'shilmagan. 'Yangi sayt qo'shish' bilan boshlang." /> }}
           columns={[
             {
-              title: 'Holat',
+              title: 'Monitoring',
               dataIndex: 'is_active',
-              width: 100,
+              width: 120,
               render: (v) =>
                 v ? (
-                  <Tag color="success" icon={<CheckCircleOutlined />}>FAOL</Tag>
+                  <Tag color="success" icon={<CheckCircleOutlined />} style={{ fontWeight: 600 }}>YOQILGAN</Tag>
                 ) : (
-                  <Tag>passiv</Tag>
+                  <Tag>o'chirilgan</Tag>
                 ),
             },
             { title: 'Nom', dataIndex: 'name', width: 180 },
@@ -145,6 +156,20 @@ export default function SitesPage(): JSX.Element {
               width: 80,
               render: () => <Tag>••••</Tag>,
             },
+            {
+              title: 'Tunel',
+              dataIndex: 'use_proxy',
+              width: 100,
+              render: (v) => v === 0 ? (
+                <Tooltip title="VPS to'g'ridan-to'g'ri ulanadi (10x tezroq)">
+                  <Tag color="success" icon={<ThunderboltOutlined />}>TO'G'RIDAN</Tag>
+                </Tooltip>
+              ) : (
+                <Tooltip title="Chisel tunnel orqali (uy PC dan)">
+                  <Tag color="processing">TUNEL</Tag>
+                </Tooltip>
+              ),
+            },
             { title: 'Izoh', dataIndex: 'note', ellipsis: true },
             {
               title: 'Yangilangan',
@@ -157,18 +182,17 @@ export default function SitesPage(): JSX.Element {
               width: 280,
               render: (_, r) => (
                 <span>
-                  {!r.is_active && (
-                    <Button
-                      type="primary"
-                      size="small"
-                      icon={<CheckCircleOutlined />}
-                      onClick={() => activateMut.mutate(r.id)}
-                      loading={activateMut.isPending}
-                      style={{ marginRight: 8 }}
-                    >
-                      Faollashtirish
-                    </Button>
-                  )}
+                  <Button
+                    type={r.is_active ? 'default' : 'primary'}
+                    size="small"
+                    icon={<CheckCircleOutlined />}
+                    onClick={() => activateMut.mutate(r.id)}
+                    loading={activateMut.isPending}
+                    style={{ marginRight: 8 }}
+                    danger={!!r.is_active}
+                  >
+                    {r.is_active ? 'O\'chirish' : 'Yoqish'}
+                  </Button>
                   <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)} style={{ marginRight: 8 }}>
                     Tahrir
                   </Button>
@@ -243,6 +267,19 @@ export default function SitesPage(): JSX.Element {
             rules={editing ? [] : [{ required: true, message: 'Parol kerak' }]}
           >
             <Input.Password placeholder={editing ? 'Eski parolni saqlash uchun bo\'sh qoldiring' : 'Sayt paroli'} />
+          </Form.Item>
+
+          <Form.Item
+            name="use_proxy"
+            label={
+              <span>
+                <ThunderboltOutlined /> Tunel (chisel proxy) ishlatish
+              </span>
+            }
+            valuePropName="checked"
+            extra="Agar sayt VPS'dan to'g'ridan-to'g'ri ochilsa, tunelni o'chiring (10x tezroq). Aksincha o'chgan saytlar uchun yoqing."
+          >
+            <Switch checkedChildren="TUNEL (uy PC orqali)" unCheckedChildren="TO'G'RIDAN (tez)" />
           </Form.Item>
 
           <Form.Item name="note" label="Izoh (ixtiyoriy)">

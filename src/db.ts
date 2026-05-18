@@ -128,6 +128,9 @@ const MIGRATIONS = [
   "ALTER TABLE orders ADD COLUMN site_id INTEGER",
   "ALTER TABLE fraud_alerts ADD COLUMN site_id INTEGER",
   "ALTER TABLE site_credentials ADD COLUMN use_proxy INTEGER DEFAULT 1",
+  // Auto Подразделение Выбрать все — ba'zi loginlar uchun saytdagi default
+  // filter allaqachon to'g'ri, qo'l tegmaslik kerak (1=ON, 0=OFF)
+  "ALTER TABLE site_credentials ADD COLUMN auto_select_all INTEGER DEFAULT 1",
   // Duplicate alert oldini olish — bir order_id uchun faqat bitta fraud_alert
   "CREATE UNIQUE INDEX IF NOT EXISTS idx_fraud_alerts_order_unique ON fraud_alerts(order_id)",
   // Region blacklist — noto'g'ri parse bo'lgan ko'cha/mahalla nomlarini bloklash

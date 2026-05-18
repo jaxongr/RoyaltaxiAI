@@ -1938,6 +1938,7 @@ interface SiteRow {
   username: string;
   password: string;
   use_proxy?: number; // 1 = chisel tunnel orqali, 0 = to'g'ridan-to'g'ri (proxysiz)
+  auto_select_all?: number; // 1 = Подразделение filtrini auto-belgilash, 0 = qoldirish
 }
 
 function spawnMonitorForSite(site: SiteRow): { ok: boolean; pid?: number; error?: string } {
@@ -1977,6 +1978,7 @@ function spawnMonitorForSite(site: SiteRow): { ok: boolean; pid?: number; error?
     STORAGE_STATE_PATH: storagePath,
     SITE_ID: String(site.id),
     SITE_NAME: site.name,
+    AUTO_SELECT_ALL: String(site.auto_select_all ?? 1),
     NODE_ENV: process.env.NODE_ENV ?? 'production',
   };
   // Agar sayt to'g'ridan-to'g'ri ishlasa (use_proxy=0), tunelni o'chiramiz
@@ -2046,7 +2048,7 @@ function startMonitor(): { ok: boolean; started: Array<{ id: number; name: strin
 
     const activeSites = db
       .prepare(
-        `SELECT id, name, base_url, username, password, use_proxy
+        `SELECT id, name, base_url, username, password, use_proxy, auto_select_all
          FROM site_credentials WHERE is_active = 1 ORDER BY id LIMIT 6`,
       )
       .all() as SiteRow[];

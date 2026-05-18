@@ -1,12 +1,14 @@
 import { Card, Table, Tag, Input, Empty, Tooltip } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { api, type ClientRow } from '../lib/api';
 import DriverDrawer from '../components/DriverDrawer';
 
 export default function ClientsPage(): JSX.Element {
   const [q, setQ] = useState('');
   const [drvOpen, setDrvOpen] = useState<string | null>(null);
+  const navigate = useNavigate();
   const { data, isFetching } = useQuery<{ items: ClientRow[] }>({
     queryKey: ['clients', q],
     queryFn: () => api.get('/clients', { params: { q } }).then((r) => r.data),
@@ -39,7 +41,16 @@ export default function ClientsPage(): JSX.Element {
           pagination={{ pageSize: 50 }}
           locale={{ emptyText: <Empty /> }}
           columns={[
-            { title: 'Telefon', dataIndex: 'client_phone', width: 160, render: (v) => <Tag>{v}</Tag> },
+            {
+              title: 'Telefon',
+              dataIndex: 'client_phone',
+              width: 180,
+              render: (v) => (
+                <a onClick={() => navigate(`/clients/${encodeURIComponent(v)}`)}>
+                  <Tag color="blue">{v}</Tag>
+                </a>
+              ),
+            },
             { title: 'Zakaz', dataIndex: 'orders', width: 80, sorter: (a, b) => a.orders - b.orders },
             {
               title: 'Turli haydovchi',

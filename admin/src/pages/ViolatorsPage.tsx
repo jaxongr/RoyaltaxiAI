@@ -1,7 +1,7 @@
-import { Card, Table, Tag, Button, App, Modal, Form, Input, Select, Popconfirm, Empty, Drawer, Descriptions, Tooltip } from 'antd';
-import { StopOutlined, ExclamationCircleOutlined, EyeOutlined } from '@ant-design/icons';
+import { Card, Table, Tag, Button, App, Modal, Form, Input, Select, Popconfirm, Empty, Drawer, Descriptions, Tooltip, Segmented } from 'antd';
+import { StopOutlined, ExclamationCircleOutlined, EyeOutlined, UnlockOutlined, DownloadOutlined, CheckCircleOutlined } from '@ant-design/icons';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { api, fmtKm, fmtSek, fmtTime, fmtNarx, type ViolatorRow } from '../lib/api';
 
 interface ViolationRow {
@@ -35,6 +35,7 @@ export default function ViolatorsPage(): JSX.Element {
   const { message } = App.useApp();
   const qc = useQueryClient();
   const [days, setDays] = useState(7);
+  const [blockFilter, setBlockFilter] = useState<'all' | 'active' | 'blocked'>('all');
   const [drawerCallsign, setDrawerCallsign] = useState<string | null>(null);
   const [blockFor, setBlockFor] = useState<ViolatorRow | null>(null);
   const [form] = Form.useForm<BlockForm>();
@@ -44,6 +45,15 @@ export default function ViolatorsPage(): JSX.Element {
     queryFn: () => api.get('/violators', { params: { days } }).then((r) => r.data),
     refetchInterval: 15_000,
   });
+
+  const items = data?.items ?? [];
+  const filtered = useMemo(() => {
+    if (blockFilter === 'active') return items.filter((r) => !r.site_locked && !r.our_blocked);
+    if (blockFilter === 'blocked') return items.filter((r) => r.site_locked || r.our_blocked);
+    return items;
+  }, [items, blockFilter]);
+  const activeCount = items.filter((r) => !r.site_locked && !r.our_blocked).length;
+  const blockedCount = items.filter((r) => r.site_locked || r.our_blocked).length;
 
   const { data: lockKinds } = useQuery<{ items: Array<{ kind_id: string; name: string }> }>({
     queryKey: ['lock-kinds'],
@@ -56,6 +66,19 @@ export default function ViolatorsPage(): JSX.Element {
       if (r.data.ok) {
         message.success(`✅ ${r.data.driver} saytda bloklandi`);
         setBlockFor(null);
+        qc.invalidateQueries({ queryKey: ['violators'] });
+      } else {
+        message.error('Xato: ' + (r.data.error ?? 'noma\'lum'));
+      }
+    },
+    onError: (e: Error) => message.error(e.message),
+  });
+
+  const unblockMut = useMutation({
+    mutationFn: (callsign: string) => api.post('/site-unblock', { callsign }),
+    onSuccess: (r) => {
+      if (r.data.ok) {
+        message.success(`🔓 ${r.data.driver} blokdan chiqarildi`);
         qc.invalidateQueries({ queryKey: ['violators'] });
       } else {
         message.error('Xato: ' + (r.data.error ?? 'noma\'lum'));
@@ -85,17 +108,31 @@ export default function ViolatorsPage(): JSX.Element {
           </span>
         }
         extra={
-          <Select
-            value={days}
-            onChange={setDays}
-            style={{ width: 150 }}
-            options={[
-              { value: 1, label: 'Bugun' },
-              { value: 7, label: 'Oxirgi 7 kun' },
-              { value: 30, label: '30 kun' },
-              { value: 999, label: 'Hammasi' },
-            ]}
-          />
+          <span>
+            <Select
+              value={days}
+              onChange={setDays}
+              style={{ width: 150, marginRight: 8 }}
+              options={[
+                { value: 1, label: 'Bugun' },
+                { value: 7, label: 'Oxirgi 7 kun' },
+                { value: 30, label: '30 kun' },
+                { value: 999, label: 'Hammasi' },
+              ]}
+            />
+            <Button icon={<DownloadOutlined />} onClick={() => {
+              const url = `/api/export/violators?days=${days}`;
+              const token = localStorage.getItem('auth_token') ?? '';
+              fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+                .then((r) => r.blob())
+                .then((blob) => {
+                  const a = document.createElement('a');
+                  a.href = URL.createObjectURL(blob);
+                  a.download = `violators-${days}d.csv`;
+                  a.click();
+                });
+            }}>CSV</Button>
+          </span>
         }
       >
         <p style={{ color: '#6B7280', marginBottom: 12 }}>
@@ -103,11 +140,22 @@ export default function ViolatorsPage(): JSX.Element {
           {' • '}<b>Ko'rish</b> — barcha qoida buzishlari ro'yxati
           {' • '}<b>Bloklash</b> — Royaltaxi saytida darhol bloklash (qo'lda tasdiq bilan).
         </p>
+        <Segmented
+          value={blockFilter}
+          onChange={(v) => setBlockFilter(v as 'all' | 'active' | 'blocked')}
+          options={[
+            { value: 'all', label: `Hammasi (${items.length})` },
+            { value: 'active', label: <span><CheckCircleOutlined /> Aktiv ({activeCount})</span> },
+            { value: 'blocked', label: <span><StopOutlined /> Bloklangan ({blockedCount})</span> },
+          ]}
+          style={{ marginBottom: 12 }}
+        />
         <Table<ViolatorRow>
           size="middle"
           rowKey="callsign"
           loading={isFetching}
-          dataSource={data?.items ?? []}
+          dataSource={filtered}
+          rowClassName={(r) => (r.site_locked ? 'row-blocked' : '')}
           pagination={{ pageSize: 50 }}
           locale={{ emptyText: <Empty /> }}
           columns={[
@@ -153,20 +201,32 @@ export default function ViolatorsPage(): JSX.Element {
                 ) : '—',
             },
             {
-              title: 'Holat',
-              width: 130,
+              title: 'BLOK Holati',
+              width: 180,
               render: (_, r) =>
                 r.site_locked ? (
-                  <Tag color="error">Sayt: {r.site_locked}</Tag>
+                  <Tag color="error" icon={<StopOutlined />} style={{ fontWeight: 600 }}>
+                    BLOKLANGAN ({r.site_locked})
+                  </Tag>
                 ) : r.our_blocked ? (
-                  <Tag color="warning">Bizda blok</Tag>
+                  <Tag color="warning" icon={<StopOutlined />}>Bizda blok (sayt: yo'q)</Tag>
                 ) : (
-                  <Tag>aktiv</Tag>
+                  <Tag color="success" icon={<CheckCircleOutlined />}>AKTIV</Tag>
                 ),
+              filters: [
+                { text: 'Aktiv', value: 'active' },
+                { text: 'Saytda bloklangan', value: 'site' },
+                { text: 'Bizda bloklangan', value: 'our' },
+              ],
+              onFilter: (val, r) => {
+                if (val === 'site') return !!r.site_locked;
+                if (val === 'our') return !r.site_locked && !!r.our_blocked;
+                return !r.site_locked && !r.our_blocked;
+              },
             },
             {
               title: 'Amallar',
-              width: 230,
+              width: 260,
               render: (_, r) => (
                 <span>
                   <Button
@@ -177,7 +237,25 @@ export default function ViolatorsPage(): JSX.Element {
                   >
                     Ko'rish
                   </Button>
-                  {!r.site_locked && (
+                  {r.site_locked ? (
+                    <Popconfirm
+                      title="Blokdan chiqarilsinmi?"
+                      description={`${r.driver_name} saytda blokdan chiqarib yuboriladi.`}
+                      onConfirm={() => unblockMut.mutate(r.callsign)}
+                      okText="Ha, chiqar"
+                      cancelText="Bekor"
+                    >
+                      <Button
+                        size="small"
+                        type="primary"
+                        ghost
+                        icon={<UnlockOutlined />}
+                        loading={unblockMut.isPending && unblockMut.variables === r.callsign}
+                      >
+                        Blokdan chiqarish
+                      </Button>
+                    </Popconfirm>
+                  ) : (
                     <Button
                       size="small"
                       danger
@@ -192,6 +270,9 @@ export default function ViolatorsPage(): JSX.Element {
             },
           ]}
         />
+        <style>{`
+          .row-blocked td { background-color: #fff1f0 !important; }
+        `}</style>
       </Card>
 
       {/* Violations drawer */}

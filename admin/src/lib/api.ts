@@ -156,6 +156,216 @@ export interface ViolatorRow {
   office_id: string | null;
 }
 
+export interface TelegramUser {
+  id: number;
+  chat_id: string;
+  full_name: string | null;
+  username: string | null;
+  role: 'admin' | 'dispatcher' | 'viewer';
+  regions: string | null; // JSON array yoki null
+  receive_alerts: number;
+  receive_daily_report: number;
+  receive_no_orders_alert: number;
+  is_active: number;
+  note: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RegionListItem {
+  region: string;
+  cnt: number;
+}
+
+export interface DriverActivityRow {
+  callsign: string;
+  driver_name: string;
+  first_date: string;
+  last_date: string;
+  total_orders: number;
+  completed: number;
+  cancelled: number;
+  today_orders: number;
+  week_orders: number;
+  total_amount: number;
+  region: string | null;
+  days_inactive: number;
+  days_since_first: number;
+  is_site_locked: number | null;
+  lock_kind: string | null;
+  our_blocked: number | null;
+  activity_status: 'aktiv_bugun' | 'aktiv_hafta' | 'yoqotilgan' | 'kutmoqda';
+  is_new: number;
+}
+
+export interface DriverRetentionResponse {
+  summary: {
+    total_drivers: number;
+    active_today: number;
+    active_week: number;
+    churned: number;
+    new_drivers: number;
+  };
+  newOnes: Array<{
+    callsign: string;
+    driver_name: string;
+    first_date: string;
+    orders: number;
+    total_amount: number;
+    region: string | null;
+  }>;
+  churnedOnes: Array<{
+    callsign: string;
+    driver_name: string;
+    last_date: string;
+    past_orders: number;
+    past_amount: number;
+    days_inactive: number;
+    region: string | null;
+    lock_kind: string | null;
+  }>;
+  newWindow: number;
+  inactiveDays: number;
+}
+
+export interface HeatmapResponse {
+  matrix: Array<Array<{ orders: number; drivers: number }>>;
+  max: number;
+  days: number;
+}
+
+export interface ClientSummary {
+  orders_total: number;
+  completed: number;
+  cancelled: number;
+  no_answer: number;
+  already_left: number;
+  drivers_used: number;
+  total_spent: number;
+  avg_check: number;
+  first_order: string;
+  last_order: string;
+}
+
+export interface ClientDetailResponse {
+  summary: ClientSummary;
+  byRegion: Array<{ region: string; cnt: number }>;
+  byDriver: Array<{ callsign: string; driver_name: string; cnt: number }>;
+  recentOrders: Array<{
+    order_id: number;
+    callsign: string;
+    driver_name: string;
+    region: string;
+    date: string;
+    time: string;
+    distance_km: number | null;
+    amount: number | null;
+    status: string;
+    cancel_kind: string | null;
+    address: string;
+  }>;
+}
+
+export interface TopEarnerRow {
+  callsign: string;
+  driver_name: string;
+  region: string | null;
+  orders: number;
+  completed: number;
+  cancelled: number;
+  total_amount: number;
+  avg_check: number;
+  total_km: number;
+  alerts: number;
+  is_blocked: number | null;
+}
+
+export interface ClientBlacklistRow {
+  client_phone: string;
+  orders_total: number;
+  cancelled: number;
+  no_answer: number;
+  already_left: number;
+  client_fault: number;
+  cancel_rate: number;
+  region: string | null;
+  last_order: string;
+}
+
+export interface ClientRetentionResponse {
+  daily: Array<{
+    day: string;
+    new_clients: number;
+    returning_clients: number;
+    total_clients: number;
+  }>;
+  churned: Array<{
+    client_phone: string;
+    past_orders: number;
+    last_order: string;
+    days_since: number;
+    region: string | null;
+  }>;
+}
+
+export interface PopularRouteRow {
+  from_region: string;
+  to_address: string;
+  count: number;
+  avg_km: number;
+  avg_amount: number;
+  drivers: number;
+}
+
+export interface CancelBreakdownResponse {
+  byKind: Array<{ cancel_kind: string; cnt: number; pct: number }>;
+  byRegion: Array<{
+    region: string;
+    by_client: number;
+    auto: number;
+    already_left: number;
+    no_answer: number;
+    driver_fault: number;
+    dispatch_fault: number;
+    total: number;
+  }>;
+}
+
+export interface RegionStatsRow {
+  region: string;
+  orders: number;
+  completed: number;
+  cancelled: number;
+  active_drivers: number;
+  total_amount: number;
+  alerts_count: number;
+}
+
+export interface DailyStatsRow {
+  day: string;
+  orders: number;
+  completed: number;
+  cancelled: number;
+  active_drivers: number;
+  regions: number;
+  total_amount: number;
+  weekday: number;
+}
+
+export interface ForecastResponse {
+  tomorrow: string;
+  weekday: number;
+  weekdayName: string;
+  predictedOrders: number;
+  predictedDrivers: number;
+  basedOn: {
+    sameWeekdayDays: Array<{ date: string; orders: number; drivers: number }>;
+    last7: Array<{ date: string; orders: number; drivers: number }>;
+    avgSameWeekday: number;
+    avgLast7: number;
+  };
+}
+
 export interface AuditRow {
   id: number;
   action: string;
