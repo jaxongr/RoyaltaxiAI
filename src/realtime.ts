@@ -110,6 +110,10 @@ async function ensureAllSubdivisionsChecked(session: BrowserSession): Promise<vo
       }
     }).catch(() => undefined);
 
+    // Sahifa to'liq yuklanishini kutamiz (Vue komponentlari render bo'lguncha)
+    await page.waitForLoadState('networkidle', { timeout: 10_000 }).catch(() => undefined);
+    await new Promise((r) => setTimeout(r, 3000));
+
     // Browser tomonida ishlaydigan funksiyani string sifatida uzatamiz —
     // esbuild __name'larini avtomatik inject qilmasligi uchun.
     const evalBody = `
@@ -119,16 +123,34 @@ async function ensureAllSubdivisionsChecked(session: BrowserSession): Promise<vo
         function sleep(ms){return new Promise(function(r){setTimeout(r,ms);});}
 
         function findTrigger() {
-          var all = Array.from(document.querySelectorAll('button, [role="button"], .hv-filter, [class*="filter"], [class*="dropdown"], label, span, div'));
+          // 1-darajali: matn aniq "Подразделение" bilan boshlanadi (qisqa elementlar)
+          var all = Array.from(document.querySelectorAll('button, [role="button"], .hv-filter, [class*="filter"], [class*="dropdown"], [class*="select"], label, span, div, a'));
           for (var i=0; i<all.length; i++) {
             var t = (all[i].textContent || '').trim();
-            if (/^Подразделение(\\s|:|$)/i.test(t) || /^Subdivisi|^Hudud/i.test(t)) return all[i];
+            if (t.length > 200) continue; // juda katta wrapper'lar — o'tkazib yuboramiz
+            if (/^Подразделени/i.test(t)) return all[i];
+            if (/^Subdivisi|^Hudud|^Подраздел/i.test(t)) return all[i];
+          }
+          // 2-darajali: matn ichida "Подразделени" bor (qisqa elementlar)
+          for (var j=0; j<all.length; j++) {
+            var t2 = (all[j].textContent || '').trim();
+            if (t2.length > 100) continue;
+            if (/Подразделени/i.test(t2)) return all[j];
           }
           return null;
         }
 
         var trigger = findTrigger();
-        if (!trigger) return { ok: false, reason: 'trigger-not-found' };
+        if (!trigger) {
+          // Debug: barcha qisqa textcontent'larni qaytarib yuboramiz (qaysi matn bor ko'rsin)
+          var sample = [];
+          var els = Array.from(document.querySelectorAll('button, label, [class*="filter"]')).slice(0, 50);
+          for (var s=0; s<els.length; s++) {
+            var st = (els[s].textContent || '').trim();
+            if (st && st.length < 50) sample.push(st);
+          }
+          return { ok: false, reason: 'trigger-not-found', sampleTexts: sample.slice(0, 20) };
+        }
 
         trigger.scrollIntoView({ block: 'center' });
         await sleep(300);
@@ -183,11 +205,20 @@ async function ensureAllSubdivisionsChecked(session: BrowserSession): Promise<vo
     const result = await page.evaluate(evalBody) as {
       ok: boolean;
       reason?: string;
+      sampleTexts?: string[];
       totalCheckboxes?: number;
       newlyChecked?: number;
       alreadyChecked?: number;
       names?: string[];
     };
+
+    if (!result.ok && result.reason === 'trigger-not-found') {
+      logger.warn(
+        { sampleTexts: result.sampleTexts },
+        'Подразделение UI ochilmadi — DOM\'da matn topilmadi (debug uchun sample matnlar)',
+      );
+      return;
+    }
 
     if (result.ok && (result.totalCheckboxes ?? 0) > 0) {
       const newly = result.newlyChecked ?? 0;
