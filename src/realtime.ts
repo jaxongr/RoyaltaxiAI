@@ -219,6 +219,13 @@ async function ensureAllSubdivisionsChecked(session: BrowserSession): Promise<vo
       );
       return;
     }
+    if (result.ok && (result.totalCheckboxes ?? 0) === 0) {
+      logger.warn(
+        { result },
+        'Подразделение UI: trigger bosilgan, lekin checkbox topilmadi (popup ochilmadi yoki boshqacha)',
+      );
+      return;
+    }
 
     if (result.ok && (result.totalCheckboxes ?? 0) > 0) {
       const newly = result.newlyChecked ?? 0;

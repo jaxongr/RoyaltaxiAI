@@ -2900,6 +2900,67 @@ server.listen(PORT, () => {
     }, 5000); // 5 sek kechikish — dashboard to'liq tayyor bo'lsin
   }
 
+  // 🧹 AUTO-CLEANUP #1: Memory monitor — har 5 daqiqa dashboard memory'sini tekshiradi.
+  // Agar 1.5 GB dan oshsa, o'zini graceful restart qiladi (pm2 qaytadan tushiradi).
+  setInterval(() => {
+    const mem = process.memoryUsage();
+    const rssMB = Math.round(mem.rss / 1024 / 1024);
+    const heapMB = Math.round(mem.heapUsed / 1024 / 1024);
+    if (rssMB > 1500) {
+      logger.warn({ rssMB, heapMB }, '⚠️  Dashboard memory 1.5GB dan oshdi — auto-restart');
+      process.exit(0); // pm2 avtomatik qayta tushiradi
+    } else if (rssMB > 1000) {
+      logger.info({ rssMB, heapMB }, 'Memory: 1GB+ (yetuk holatga yaqinlashmoqda)');
+    }
+  }, 5 * 60 * 1000);
+
+  // 🧹 AUTO-CLEANUP #2: SQLite WAL checkpoint — har 30 daqiqada WAL faylni asosiy DB ga
+  // qo'shib, hajmini kichraytiradi. Bu DB lock vaqtini va disk hajmini cheklayd.
+  setInterval(() => {
+    try {
+      const result = db.pragma('wal_checkpoint(PASSIVE)') as Array<{ busy: number; log: number; checkpointed: number }>;
+      const r = result?.[0];
+      if (r && r.log > 5000) {
+        logger.info({ log: r.log, checkpointed: r.checkpointed }, '🧹 WAL checkpoint');
+      }
+    } catch (err) {
+      logger.warn({ err: (err as Error).message }, 'WAL checkpoint xato');
+    }
+  }, 30 * 60 * 1000);
+
+  // 🧹 AUTO-CLEANUP #3: Stale monitor — agar sayt monitor'i 30 daqiqadan ortiq vaqt ichida
+  // tick yangilab turmagan bo'lsa (qotib qolgan), uni majburiy restart qiladi.
+  setInterval(() => {
+    try {
+      const stmt = db.prepare(
+        `SELECT site_id, datetime(last_tick_at) as ts,
+                (julianday('now') - julianday(last_tick_at)) * 24 * 60 as minSinceTick
+         FROM site_monitor_state WHERE site_id IS NOT NULL`,
+      );
+      const rows = stmt.all() as Array<{ site_id: number; ts: string; minSinceTick: number | null }>;
+      for (const row of rows) {
+        if (row.minSinceTick !== null && row.minSinceTick > 30) {
+          const m = monitors.get(row.site_id);
+          if (m && m.proc.pid != null && m.proc.exitCode === null) {
+            logger.warn(
+              { siteId: row.site_id, minSinceTick: Math.round(row.minSinceTick) },
+              '⚠️  Monitor qotib qolgan (30+ daqiqa tick yo\'q) — majburiy restart',
+            );
+            try {
+              if (process.platform === 'win32') {
+                spawn('taskkill', ['/F', '/T', '/PID', String(m.proc.pid)]);
+              } else {
+                m.proc.kill('SIGKILL');
+              }
+            } catch { /* ignore */ }
+          }
+        }
+      }
+    } catch (err) {
+      logger.warn({ err: (err as Error).message }, 'Stale monitor cleanup xato');
+    }
+  }, 10 * 60 * 1000);
+
   // Orphan Chromium cleanup — har 10 daqiqada parent o'lgan chrome'larni o'ldiradi
   setInterval(async () => {
     try {
