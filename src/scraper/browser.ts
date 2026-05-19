@@ -33,11 +33,12 @@ export async function createBrowserSession(): Promise<BrowserSession> {
       '--disable-dev-shm-usage',
       '--no-sandbox',
       // SOCKS5 proxy-side DNS resolution chisel'da ishlamaydi —
-      // DNS'ni mahalliy (server tomonida) hal qilamiz, faqat TCP traffic SOCKS orqali.
-      // Bu --socks5 (DNS local) rejimiga teng curl'da.
+      // DNS'ni mahalliy hal qilamiz (chromium socks5 mode'i avtomatik shu).
+      // Playwright'ning --host-resolver-rules="MAP * ~NOTFOUND" default'ini
+      // ignoreDefaultArgs orqali bekor qilamiz.
       '--proxy-bypass-list=<-loopback>',
-      '--host-resolver-rules=EXCLUDE 127.0.0.1',
     ],
+    ignoreDefaultArgs: ['--host-resolver-rules'],
     proxy: proxyUrl ? { server: proxyUrl } : undefined,
   });
 
