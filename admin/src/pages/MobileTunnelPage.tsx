@@ -14,25 +14,8 @@ import {
 const { Title, Text, Paragraph } = Typography;
 
 const SERVER_URL = `${window.location.protocol}//${window.location.host}`;
-const TERMUX_CMD = `curl -fsSL ${SERVER_URL}/install-tunnel.sh | sh`;
+const APK_DOWNLOAD = `${SERVER_URL}/Royaltaxi-Tunnel.apk`;
 const PC_DOWNLOAD = `${SERVER_URL}/Royaltaxi-Tunnel.bat`;
-
-function CopyBtn({ text, size = 'middle' }: { text: string; size?: 'small' | 'middle' | 'large' }): JSX.Element {
-  return (
-    <Button
-      icon={<CopyOutlined />}
-      size={size}
-      onClick={() => {
-        navigator.clipboard.writeText(text).then(
-          () => message.success('Nusxalandi'),
-          () => message.error('Nusxalashda xato'),
-        );
-      }}
-    >
-      Nusxalash
-    </Button>
-  );
-}
 
 function CodeBox({ children, copy = false }: { children: string; copy?: boolean }): JSX.Element {
   return (
@@ -162,39 +145,49 @@ function PhoneTab(): JSX.Element {
   return (
     <div>
       <Alert
-        type="info"
+        type="success"
         showIcon
         style={{ marginBottom: 16 }}
-        message="Eski telefon (A6 yoki istalgan Android) doim WiFi'da yonib tursin"
-        description="Termux orqali kichik tunel ishga tushadi. Ekran o'chsa ham, fonda ham, batareya saqlash rejimida ham UZILMAYDI. Telefon yongan zahoti avto-tushadi. Tunel o'lsa, har 15 daqiqada avto-tirilladi."
+        message="Bitta APK — install qildi, ishladi"
+        description="Hech qanday Termux, hech qanday sozlama yo'q. APK yuklab, install qiling, oching — tunel darhol ishga tushadi. Ekran o'chsa, telefon yangidan yonsa ham avto-davom etadi."
       />
+
+      <Card style={{ background: 'linear-gradient(135deg, #4F46E5 0%, #6366F1 100%)', marginBottom: 16 }}>
+        <div style={{ textAlign: 'center', color: '#fff' }}>
+          <AndroidOutlined style={{ fontSize: 48, marginBottom: 12 }} />
+          <Title level={4} style={{ color: '#fff' }}>Royaltaxi Tunel — Android APK</Title>
+          <Button
+            type="primary"
+            size="large"
+            icon={<DownloadOutlined />}
+            href={APK_DOWNLOAD}
+            style={{ background: '#fff', color: '#4F46E5', fontWeight: 600, marginTop: 8 }}
+          >
+            Royaltaxi-Tunnel.apk yuklash (~10 MB)
+          </Button>
+          <div style={{ marginTop: 12, fontSize: 12, opacity: 0.8 }}>
+            Yuklash uchun: <Text style={{ color: '#fff' }} copyable>{APK_DOWNLOAD}</Text>
+          </div>
+        </div>
+      </Card>
 
       <Row gutter={16} style={{ marginBottom: 16 }}>
         <Col xs={24} sm={8}>
           <Card size="small" style={{ textAlign: 'center' }}>
             <WifiOutlined style={{ fontSize: 28, color: '#6B46C1' }} />
             <div style={{ marginTop: 8, fontWeight: 600 }}>WiFi'ga ulang</div>
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              Telefon doim WiFi'da bo'lsin
-            </Text>
           </Card>
         </Col>
         <Col xs={24} sm={8}>
           <Card size="small" style={{ textAlign: 'center' }}>
             <ThunderboltOutlined style={{ fontSize: 28, color: '#F59E0B' }} />
             <div style={{ marginTop: 8, fontWeight: 600 }}>Quvvatga ulang</div>
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              Zaryadlovchi doim ulangan
-            </Text>
           </Card>
         </Col>
         <Col xs={24} sm={8}>
           <Card size="small" style={{ textAlign: 'center' }}>
             <CheckCircleOutlined style={{ fontSize: 28, color: '#16A34A' }} />
-            <div style={{ marginTop: 8, fontWeight: 600 }}>Avto-ishlash</div>
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              O'chsa ham qayta yonadi
-            </Text>
+            <div style={{ marginTop: 8, fontWeight: 600 }}>Avto-davom</div>
           </Card>
         </Col>
       </Row>
@@ -204,100 +197,60 @@ function PhoneTab(): JSX.Element {
         current={-1}
         items={[
           {
-            title: '1. F-Droid o\'rnating (Play Store emas)',
+            title: '1. APK faylini yuklang',
             icon: <DownloadOutlined />,
-            description: (
-              <div>
-                <Paragraph style={{ marginTop: 8 }}>
-                  Telefonga <Text strong>F-Droid</Text> dasturini brauzer orqali yuklang:
-                </Paragraph>
-                <CodeBox copy>https://f-droid.org/F-Droid.apk</CodeBox>
-                <Alert
-                  type="warning"
-                  showIcon
-                  message="Play Store'dagi Termux eski va ishlamaydi. Faqat F-Droid'dan o'rnating."
-                />
-              </div>
-            ),
-          },
-          {
-            title: '2. F-Droid\'dan 3 ta dasturni o\'rnating',
-            icon: <DownloadOutlined />,
-            description: (
-              <Space direction="vertical" size={8} style={{ width: '100%', marginTop: 8 }}>
-                <Tag color="purple" style={{ fontSize: 13, padding: '4px 10px' }}>
-                  Termux
-                </Tag>
-                <Tag color="purple" style={{ fontSize: 13, padding: '4px 10px' }}>
-                  Termux:Boot — (telefon yongan zahoti avto-start)
-                </Tag>
-                <Tag color="purple" style={{ fontSize: 13, padding: '4px 10px' }}>
-                  Termux:API — (ekran o'chsa ham ishlash uchun)
-                </Tag>
-              </Space>
-            ),
-          },
-          {
-            title: '3. Termux\'ni oching va bitta buyruqni nusxalang',
-            icon: <PlayCircleOutlined />,
             description: (
               <div style={{ marginTop: 8 }}>
-                <Paragraph>Telefondagi Termux ichida shu buyruqni yopishtiring va Enter bosing:</Paragraph>
-                <CodeBox copy>{TERMUX_CMD}</CodeBox>
-                <CopyBtn text={TERMUX_CMD} />
-                <Paragraph type="secondary" style={{ marginTop: 12, fontSize: 12 }}>
-                  Skript avtomatik:<br />
-                  • chisel binary'ni yuklab oladi<br />
-                  • Avto-start sozlaydi (telefon yondi → tunel qo'shildi)<br />
-                  • Wakelock yoqadi (ekran o'chsa ham ishlaydi)<br />
-                  • Tunelni darhol ishga tushiradi
+                <Paragraph>
+                  Yuqoridagi "Royaltaxi-Tunnel.apk yuklash" tugmasini bosing.
+                  Yoki telefon brauzerida:
                 </Paragraph>
+                <CodeBox copy>{APK_DOWNLOAD}</CodeBox>
               </div>
             ),
           },
           {
-            title: '4. Termux:Boot dasturini bir marta oching',
+            title: '2. "Noma\'lum manbalar" ruxsatini bering',
             icon: <PlayCircleOutlined />,
             description: (
               <Paragraph style={{ marginTop: 8 }}>
-                <Text strong>Termux:Boot</Text> ikonkasini bir marta oching — autostart faollashadi.
-                Endi telefon o'chib-yonsa ham tunel o'zi qayta ishga tushadi.
+                Telefoni "Bu manbadan o'rnatishga ruxsat berilsinmi?" deb so'raydi —
+                <Text strong> "Ruxsat ber"</Text> ni bosing. (Faqat brauzer uchun bir martalik ruxsat.)
               </Paragraph>
             ),
           },
           {
-            title: '5. Telefon sozlamalari (juda muhim! — ekran o\'chsa ham uzilmasin)',
+            title: '3. APK ni install qiling',
+            icon: <PlayCircleOutlined />,
+            description: (
+              <Paragraph style={{ marginTop: 8 }}>
+                "Install" → ko'k tugma. Bir necha soniya kuting. "Open" bosing.
+              </Paragraph>
+            ),
+          },
+          {
+            title: '4. Ochilganda 2 ta tugmacha bosing',
             icon: <ThunderboltOutlined />,
             description: (
               <div style={{ marginTop: 8 }}>
-                <Paragraph>Bu sozlamalar telefon uxlatilganda ham tunel uzilmasligi uchun:</Paragraph>
-                <Space direction="vertical" style={{ width: '100%' }} size={6}>
-                  <div>
-                    <Text strong>1) Batareya:</Text> Sozlamalar → Batareya/Apps → quyidagilarni
-                    {' '}<Tag color="success">Cheksiz / Unrestricted</Tag>:
-                    <div style={{ marginTop: 4, paddingLeft: 16 }}>
-                      <Space wrap>
-                        <Tag color="purple">Termux</Tag>
-                        <Tag color="purple">Termux:API</Tag>
-                        <Tag color="purple">Termux:Boot</Tag>
-                      </Space>
-                    </div>
-                  </div>
-                  <div>
-                    <Text strong>2) WiFi:</Text> Sozlamalar → WiFi → Qo'shimcha →
-                    {' '}<Tag color="processing">Uxlash rejimida WiFi yoqiq (Always)</Tag>
-                  </div>
-                  <div>
-                    <Text strong>3) Batareya saqlash rejimi:</Text> Tezkor sozlamalar →
-                    {' '}<Tag color="default">O'chiq</Tag>
-                  </div>
-                  <div>
-                    <Text strong>4) Bildirishnoma:</Text> Telefon yuqori panelida 🚖
-                    "Royaltaxi Tunel" doimiy turadi — <Text type="danger">yopmang!</Text>
-                    {' '}(Bu Android tunelni o'ldirmasligi uchun zarur.)
-                  </div>
+                <Paragraph>App ochilganda:</Paragraph>
+                <Space direction="vertical" size={6}>
+                  <div><Tag color="purple">Batareya cheklovini olib tashlash</Tag> — bosing, "Allow"</div>
+                  <div><Tag color="purple">Auto-start sozlamasini ochish</Tag> — agar Xiaomi/Oppo/Vivo bo'lsa yoqib qo'ying</div>
+                  <div><Tag color="default">Yopish (tunel ishlaydi)</Tag> — appni yoping, xizmat fonda davom etadi</div>
                 </Space>
               </div>
+            ),
+          },
+          {
+            title: '5. ✅ Tayyor! Bildirishnoma 🚖 doim turadi',
+            icon: <CheckCircleOutlined />,
+            description: (
+              <Paragraph style={{ marginTop: 8 }}>
+                Telefon yuqori panelida <Text strong>🚖 Royaltaxi Tunel — Ulangan</Text> bildirishnomasi doim turadi.
+                {' '}<Text type="danger">Yopmang!</Text> — bu Android jarayonni o'ldirmasligi uchun.
+                {' '}Telefon yongan zahoti tunel avto-tushadi.
+              </Paragraph>
             ),
           },
         ]}

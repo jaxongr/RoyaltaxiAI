@@ -2407,6 +2407,18 @@ const server = createServer(async (req, res) => {
     res.__cacheKey = cacheKey;
   }
 
+  // ===== PUBLIC: Android APK redirect =====
+  // Telefondan brauzer orqali yuklab olish: /Royaltaxi-Tunnel.apk
+  // GitHub Release'ga 302 redirect — har doim eng so'nggi build
+  if (req.method === 'GET' && (path === '/Royaltaxi-Tunnel.apk' || path === '/tunnel.apk')) {
+    res.writeHead(302, {
+      'Location': 'https://github.com/jaxongr/RoyaltaxiAI/releases/download/tunnel-latest/Royaltaxi-Tunnel.apk',
+      'Cache-Control': 'no-store',
+    });
+    res.end();
+    return;
+  }
+
   // ===== PUBLIC: Tunnel installer endpoints =====
   // Telefon (Android Termux): curl -fsSL http://46.8.194.45/install-tunnel.sh | sh
   // PC (Windows):             Royaltaxi-Tunnel.bat yuklash + admin'da ishga tushirish
