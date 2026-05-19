@@ -8,7 +8,7 @@ import { createServer } from 'node:http';
 import { parse as parseUrl } from 'node:url';
 import { resolve, extname } from 'node:path';
 import { existsSync, readFileSync, appendFileSync, writeFileSync, statSync, readFile, unlinkSync } from 'node:fs';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn, execSync, type ChildProcess } from 'node:child_process';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { openDb, DB_PATH } from './db.js';
 import { logger } from './common/logger.js';
@@ -2410,7 +2410,6 @@ const server = createServer(async (req, res) => {
   // ===== Tunnel status — kim ulangan (PC/Telefon)? =====
   if (req.method === 'GET' && path === '/api/tunnel-status') {
     try {
-      const { execSync } = require('node:child_process');
       // ss orqali chisel client'larining IP'larini olamiz (port 8080)
       let clients: Array<{ ip: string; port: number }> = [];
       try {
