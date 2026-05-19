@@ -2407,25 +2407,38 @@ const server = createServer(async (req, res) => {
     res.__cacheKey = cacheKey;
   }
 
-  // ===== PUBLIC: Mobil tunnel installer (Termux'dan curl uchun) =====
-  // Foydalanuvchi telefonidagi Termux'da:
-  //   curl -fsSL http://46.8.194.45/install-tunnel.sh | sh
-  // Hech qanday auth talab qilinmaydi (chisel auth'ni o'zi tekshiradi).
-  if (req.method === 'GET' && path === '/install-tunnel.sh') {
+  // ===== PUBLIC: Tunnel installer endpoints =====
+  // Telefon (Android Termux): curl -fsSL http://46.8.194.45/install-tunnel.sh | sh
+  // PC (Windows):             Royaltaxi-Tunnel.bat yuklash + admin'da ishga tushirish
+  // PowerShell (admin):       iwr http://46.8.194.45/install-tunnel.ps1 -UseBasicParsing | iex
+  if (req.method === 'GET' && (path === '/install-tunnel.sh' || path === '/install-tunnel.ps1' || path === '/install-tunnel.bat' || path === '/Royaltaxi-Tunnel.bat')) {
     try {
-      const scriptPath = resolve(process.cwd(), 'tools', 'termux-tunnel-install.sh');
+      const fileMap: Record<string, { file: string; ctype: string }> = {
+        '/install-tunnel.sh':       { file: 'termux-tunnel-install.sh', ctype: 'text/x-shellscript; charset=utf-8' },
+        '/install-tunnel.ps1':      { file: 'install-tunnel.ps1',       ctype: 'text/plain; charset=utf-8' },
+        '/install-tunnel.bat':      { file: 'Royaltaxi-Tunnel.bat',     ctype: 'application/octet-stream' },
+        '/Royaltaxi-Tunnel.bat':    { file: 'Royaltaxi-Tunnel.bat',     ctype: 'application/octet-stream' },
+      };
+      const entry = fileMap[path];
+      if (!entry) { res.writeHead(404); res.end(); return; }
+      const scriptPath = resolve(process.cwd(), 'tools', entry.file);
       if (existsSync(scriptPath)) {
-        const body = readFileSync(scriptPath, 'utf-8');
-        res.writeHead(200, {
-          'Content-Type': 'text/x-shellscript; charset=utf-8',
+        const body = readFileSync(scriptPath);
+        const headers: Record<string, string> = {
+          'Content-Type': entry.ctype,
           'Cache-Control': 'no-store',
-          'Content-Length': String(Buffer.byteLength(body)),
-        });
+          'Content-Length': String(body.length),
+        };
+        // .bat fayli — brauzer yuklab olsin (Save As)
+        if (path.endsWith('.bat')) {
+          headers['Content-Disposition'] = 'attachment; filename="Royaltaxi-Tunnel.bat"';
+        }
+        res.writeHead(200, headers);
         res.end(body);
         return;
       }
       res.writeHead(404, { 'Content-Type': 'text/plain' });
-      res.end('# installer skript topilmadi');
+      res.end('# installer fayl topilmadi');
       return;
     } catch {
       res.writeHead(500, { 'Content-Type': 'text/plain' });
