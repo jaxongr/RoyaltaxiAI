@@ -424,6 +424,175 @@ async function ensureAllSubdivisionsChecked(session: BrowserSession): Promise<vo
   }
 }
 
+// Бренд (Brand) filtri — Royaltaxi, Bonus Taxi, Taxi 1283 hammasini belgilash
+// Foydalanuvchi shikoyati: Qashqadaryo'da faqat Royaltaxi ko'rinmoqda — Bonus Taxi va Taxi 1283 ko'rilmayapti
+async function ensureAllBrandsChecked(session: BrowserSession): Promise<void> {
+  if (process.env.AUTO_SELECT_ALL === '0') return;
+  const { page } = session;
+  try {
+    const evalBody = `
+      (async function() {
+        var g = globalThis;
+        if (typeof g.__name === 'undefined') g.__name = function(fn){return fn;};
+        function sleep(ms){return new Promise(function(r){setTimeout(r,ms);});}
+
+        function fullClick(el) {
+          try { el.focus && el.focus(); } catch(e) {}
+          var rect = el.getBoundingClientRect();
+          var opts = { bubbles: true, cancelable: true, view: window, clientX: rect.left+5, clientY: rect.top+5 };
+          el.dispatchEvent(new MouseEvent('mousedown', opts));
+          el.dispatchEvent(new MouseEvent('mouseup', opts));
+          el.dispatchEvent(new MouseEvent('click', opts));
+        }
+
+        // 1) Бренд filter trigger
+        var labels = Array.from(document.querySelectorAll('label'));
+        var trigger = null;
+        var labelMatched = '';
+        for (var i=0; i<labels.length; i++) {
+          var t = (labels[i].textContent || '').trim();
+          if (/^(Бренд|Бренды|Brand|Brands|Operator|Brendlar)$/i.test(t)) {
+            var parent = labels[i].parentElement;
+            if (parent) {
+              var inp = parent.querySelector('input.mselect-input, input[class*="select"], .select-default, [class*="select"]');
+              if (inp) { trigger = inp; labelMatched = t; break; }
+            }
+            var next = labels[i].nextElementSibling;
+            if (next) { trigger = next; labelMatched = t; break; }
+          }
+        }
+
+        if (!trigger) {
+          return { ok: false, reason: 'brand-trigger-not-found' };
+        }
+
+        trigger.scrollIntoView({ block: 'center' });
+        await sleep(300);
+        fullClick(trigger);
+        await sleep(1500);
+
+        var initialCb = document.querySelectorAll('input[type="checkbox"]:not(:disabled)').length;
+        if (initialCb === 0) {
+          fullClick(trigger);
+          await sleep(1500);
+        }
+
+        // 2) Avval brend'larni unique olamiz — biror Бренд checkbox bormi?
+        var uncheckedBefore = document.querySelectorAll('.checkbox_unchecked').length;
+        var checkedBefore = document.querySelectorAll('.checkbox_checked').length;
+        var totalBefore = uncheckedBefore + checkedBefore;
+
+        // 3) "Выбрать все" topish
+        var selectAllEl = null;
+        var allLeafs = Array.from(document.querySelectorAll('.item-text, span, label, button, div'));
+        for (var sa=0; sa<allLeafs.length; sa++) {
+          var txt = (allLeafs[sa].textContent || '').trim();
+          if (txt.length > 30) continue;
+          if (/^(Выбрать все|Выбрать всё|Select all|Hammasini)$/i.test(txt)) {
+            var p = allLeafs[sa];
+            var clickable = p.closest('.sub-item, .item-container, .item');
+            selectAllEl = clickable || p;
+            break;
+          }
+        }
+
+        var newlyChecked = 0;
+        if (uncheckedBefore > 0 && selectAllEl) {
+          fullClick(selectAllEl);
+          await sleep(800);
+          var uncheckedAfter = document.querySelectorAll('.checkbox_unchecked').length;
+          if (uncheckedAfter > uncheckedBefore) {
+            // Yomon o'zgardi — revert
+            fullClick(selectAllEl);
+            await sleep(600);
+            uncheckedAfter = document.querySelectorAll('.checkbox_unchecked').length;
+          }
+          newlyChecked = uncheckedBefore - uncheckedAfter;
+        } else if (uncheckedBefore > 0) {
+          // Fallback: bittama-bitta bosish
+          var u = Array.from(document.querySelectorAll('.checkbox_unchecked'));
+          for (var j=0; j<u.length; j++) {
+            fullClick(u[j]);
+            await sleep(120);
+            newlyChecked++;
+          }
+        }
+
+        // 4) Item nomlarini olamiz (qaysi brend belgilandi)
+        var brandNames = [];
+        var checkedItems = document.querySelectorAll('.checkbox_checked');
+        for (var k=0; k<Math.min(checkedItems.length, 10); k++) {
+          var container = checkedItems[k].closest('.sub-item, .item, .item-container');
+          if (container) {
+            var nameEl = container.querySelector('.item-text');
+            if (nameEl) {
+              var nm = (nameEl.textContent || '').trim().slice(0, 50);
+              if (nm) brandNames.push(nm);
+            }
+          }
+        }
+
+        // 5) Popupni yopish: Применить / corner click / blur
+        var allBtns = Array.from(document.querySelectorAll('button, [role="button"]'));
+        var applyBtn = null;
+        for (var b=0; b<allBtns.length; b++) {
+          var bt = (allBtns[b].textContent || '').trim();
+          if (/^(Применить|Apply|Saqlash|OK)$/i.test(bt)) { applyBtn = allBtns[b]; break; }
+        }
+        if (applyBtn) { fullClick(applyBtn); await sleep(600); }
+        var corner = document.elementFromPoint(10, 10);
+        if (corner) fullClick(corner);
+        await sleep(300);
+        try {
+          trigger.dispatchEvent(new Event('change', { bubbles: true }));
+          trigger.dispatchEvent(new Event('blur', { bubbles: true }));
+        } catch(e) {}
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
+        await sleep(300);
+
+        return {
+          ok: true,
+          labelMatched: labelMatched,
+          totalBrands: totalBefore,
+          newlyChecked: newlyChecked,
+          uncheckedBefore: uncheckedBefore,
+          checkedBefore: checkedBefore,
+          names: brandNames
+        };
+      })()
+    `;
+    const result = await page.evaluate(evalBody) as {
+      ok: boolean;
+      reason?: string;
+      labelMatched?: string;
+      totalBrands?: number;
+      newlyChecked?: number;
+      uncheckedBefore?: number;
+      checkedBefore?: number;
+      names?: string[];
+    };
+
+    if (!result.ok) {
+      // Brend filter topilmadi — bu OK, ba'zi loginlarda yo'q
+      logger.debug({ reason: result.reason }, 'Brend filter topilmadi (login uchun mavjud emas)');
+      return;
+    }
+    if ((result.newlyChecked ?? 0) > 0) {
+      logger.info(
+        { label: result.labelMatched, newlyChecked: result.newlyChecked, totalBrands: result.totalBrands, names: result.names },
+        `🏷️  Brend UI: ${result.newlyChecked} ta yangi brend belgilandi (jami ${result.totalBrands}) — ${(result.names ?? []).join(', ')}`,
+      );
+    } else if ((result.totalBrands ?? 0) > 0) {
+      logger.info(
+        { label: result.labelMatched, totalBrands: result.totalBrands, names: result.names },
+        `Brend UI: hammasi allaqachon belgilangan (${result.totalBrands} ta) — ${(result.names ?? []).join(', ')}`,
+      );
+    }
+  } catch (err) {
+    logger.warn({ err: (err as Error).message }, 'Brend UI tekshirishda xato');
+  }
+}
+
 function parseArgs(): {
   interval: number;
   lookback: number;
@@ -1175,7 +1344,10 @@ async function main(): Promise<void> {
             // Hozirgi aktiv session'ni olish — module-level _activeSession
             resolve(_getActiveSession());
           });
-          if (s) await ensureAllSubdivisionsChecked(s);
+          if (s) {
+            await ensureAllSubdivisionsChecked(s);
+            await ensureAllBrandsChecked(s);
+          }
         } catch (err) {
           logger.warn({ err: (err as Error).message }, 'Hourly Подразделение UI tekshirish xato');
         }
@@ -1253,6 +1425,9 @@ async function main(): Promise<void> {
       // Bu sayt'ning saqlangan filteri Poytug' kabi tumanlarni tashlab ketmasligi uchun.
       // Birinchi marta sessiya ochilganda va keyin har 1 soatda takror tekshiramiz.
       await ensureAllSubdivisionsChecked(session);
+
+      // Brend filtri (Royaltaxi, Bonus Taxi, Taxi 1283 hammasini belgilash)
+      await ensureAllBrandsChecked(session);
 
       // Startup backfill — bugun 00:00 dan tortib olmagan zakazlarni to'ldiramiz
       // Faqat birinchi sessiyada (qayta-tiklashda emas)
