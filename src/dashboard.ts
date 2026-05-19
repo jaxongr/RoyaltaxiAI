@@ -2411,17 +2411,23 @@ const server = createServer(async (req, res) => {
   if (req.method === 'GET' && path === '/api/tunnel-status') {
     try {
       // ss orqali chisel client'larining IP'larini olamiz (port 8080)
+      // ss syntax: state KEYWORD KEYWORD bo'lishi kerak FILTER ekspressiyadan oldin
       let clients: Array<{ ip: string; port: number }> = [];
       try {
-        const out = execSync("ss -tn 'sport = :8080' state established", { encoding: 'utf-8', timeout: 2000 }).trim();
+        const out = execSync("ss -tn state established '( sport = :8080 )'", { encoding: 'utf-8', timeout: 2000 }).trim();
         const lines = out.split('\n').slice(1);
         for (const line of lines) {
           const parts = line.trim().split(/\s+/);
-          if (parts.length >= 5) {
-            const peer = parts[4]; // peer_ip:port
+          // ESTABLISHED: format = "Recv-Q Send-Q Local:Port Peer:Port"
+          // No 'State' column when filtered by state
+          if (parts.length >= 4) {
+            const peer = parts[3];
             const idx = peer.lastIndexOf(':');
             if (idx > 0) {
-              clients.push({ ip: peer.substring(0, idx), port: parseInt(peer.substring(idx + 1), 10) });
+              const ip = peer.substring(0, idx);
+              if (ip && ip !== '0.0.0.0' && ip !== '127.0.0.1') {
+                clients.push({ ip, port: parseInt(peer.substring(idx + 1), 10) });
+              }
             }
           }
         }
@@ -2430,9 +2436,8 @@ const server = createServer(async (req, res) => {
       // Port 1080 listening yoki yo'q
       let port1080Listening = false;
       try {
-        execSync("ss -tln 'sport = :1080'", { encoding: 'utf-8', timeout: 2000 });
-        const lp = execSync("ss -tln 'sport = :1080' state listening", { encoding: 'utf-8', timeout: 2000 });
-        port1080Listening = lp.includes('1080');
+        const lp = execSync("ss -tln '( sport = :1080 )'", { encoding: 'utf-8', timeout: 2000 });
+        port1080Listening = /LISTEN/.test(lp) && /:1080/.test(lp);
       } catch { /* ignore */ }
 
       // Proxy orqali test (1.5 sek timeout)
