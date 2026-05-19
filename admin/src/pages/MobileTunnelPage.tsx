@@ -166,7 +166,7 @@ function PhoneTab(): JSX.Element {
         showIcon
         style={{ marginBottom: 16 }}
         message="Eski telefon (A6 yoki istalgan Android) doim WiFi'da yonib tursin"
-        description="Termux dasturi orqali kichik tunel ishga tushadi. Telefon o'chib-yonsa ham avto-ishga tushadi."
+        description="Termux orqali kichik tunel ishga tushadi. Ekran o'chsa ham, fonda ham, batareya saqlash rejimida ham UZILMAYDI. Telefon yongan zahoti avto-tushadi. Tunel o'lsa, har 15 daqiqada avto-tirilladi."
       />
 
       <Row gutter={16} style={{ marginBottom: 16 }}>
@@ -266,14 +266,36 @@ function PhoneTab(): JSX.Element {
             ),
           },
           {
-            title: '5. Telefon batareyani cheklamasin',
+            title: '5. Telefon sozlamalari (juda muhim! — ekran o\'chsa ham uzilmasin)',
             icon: <ThunderboltOutlined />,
             description: (
               <div style={{ marginTop: 8 }}>
-                <Paragraph>Telefon Sozlamalar → Batareya → quyidagilarni "Cheksiz" rejimga qo'ying:</Paragraph>
-                <Space>
-                  <Tag color="success">Termux</Tag>
-                  <Tag color="success">Termux:API</Tag>
+                <Paragraph>Bu sozlamalar telefon uxlatilganda ham tunel uzilmasligi uchun:</Paragraph>
+                <Space direction="vertical" style={{ width: '100%' }} size={6}>
+                  <div>
+                    <Text strong>1) Batareya:</Text> Sozlamalar → Batareya/Apps → quyidagilarni
+                    {' '}<Tag color="success">Cheksiz / Unrestricted</Tag>:
+                    <div style={{ marginTop: 4, paddingLeft: 16 }}>
+                      <Space wrap>
+                        <Tag color="purple">Termux</Tag>
+                        <Tag color="purple">Termux:API</Tag>
+                        <Tag color="purple">Termux:Boot</Tag>
+                      </Space>
+                    </div>
+                  </div>
+                  <div>
+                    <Text strong>2) WiFi:</Text> Sozlamalar → WiFi → Qo'shimcha →
+                    {' '}<Tag color="processing">Uxlash rejimida WiFi yoqiq (Always)</Tag>
+                  </div>
+                  <div>
+                    <Text strong>3) Batareya saqlash rejimi:</Text> Tezkor sozlamalar →
+                    {' '}<Tag color="default">O'chiq</Tag>
+                  </div>
+                  <div>
+                    <Text strong>4) Bildirishnoma:</Text> Telefon yuqori panelida 🚖
+                    "Royaltaxi Tunel" doimiy turadi — <Text type="danger">yopmang!</Text>
+                    {' '}(Bu Android tunelni o'ldirmasligi uchun zarur.)
+                  </div>
                 </Space>
               </div>
             ),
