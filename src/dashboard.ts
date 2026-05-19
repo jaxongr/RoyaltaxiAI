@@ -2424,7 +2424,9 @@ const server = createServer(async (req, res) => {
             const peer = parts[3];
             const idx = peer.lastIndexOf(':');
             if (idx > 0) {
-              const ip = peer.substring(0, idx);
+              let ip = peer.substring(0, idx);
+              // [::ffff:X.X.X.X] → X.X.X.X (IPv6-mapped IPv4)
+              ip = ip.replace(/^\[?::ffff:/i, '').replace(/\]$/, '');
               if (ip && ip !== '0.0.0.0' && ip !== '127.0.0.1') {
                 clients.push({ ip, port: parseInt(peer.substring(idx + 1), 10) });
               }
