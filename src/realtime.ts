@@ -453,7 +453,7 @@ async function ensureAllBrandsChecked(session: BrowserSession): Promise<void> {
         for (var i=0; i<labels.length; i++) {
           var t = (labels[i].textContent || '').trim();
           if (t.length > 0 && t.length < 50) allLabelTexts.push(t);
-          if (/^(Бренд|Бренды|Brand|Brands|Brendlar|Brendi|Оператор|Operator|Тариф|Тарифы|Tariff|Service)\\b/i.test(t)) {
+          if (/^(Бренд|Бренды|Brand|Brands|Brendlar|Brendi|Оператор|Operator|Тариф|Тарифы|Tariff|Service)/i.test(t)) {
             var parent = labels[i].parentElement;
             if (parent) {
               var inp = parent.querySelector('input.mselect-input, input[class*="select"], .select-default, [class*="select"]');
