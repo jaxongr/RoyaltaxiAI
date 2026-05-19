@@ -20,8 +20,12 @@ export interface BrowserSession {
 
 export async function createBrowserSession(): Promise<BrowserSession> {
   // PROXY_URL .env dan keladi (masalan: socks5://127.0.0.1:1080)
-  // Uz VPS chisel tunnel orqali sayt'ga UZ uy IP bilan ulanadi
-  const proxyUrl = process.env.PROXY_URL ?? undefined;
+  // MUHIM: socks5:// → socks4:// ga o'zgartiramiz — chunki chisel SOCKS5 proxy-side DNS
+  // qo'llab-quvvatlamaydi. SOCKS4 majburiy ravishda mahalliy DNS ishlatadi.
+  let proxyUrl = process.env.PROXY_URL ?? undefined;
+  if (proxyUrl && proxyUrl.startsWith('socks5://')) {
+    proxyUrl = 'socks4://' + proxyUrl.substring('socks5://'.length);
+  }
 
   // Chromium SOCKS5 da DNS'ni proxy orqali so'raydi, chisel uni qo'llab-quvvatlamaydi.
   // Yechim: BASE_URL hostname'ni mahalliy hal qilamiz va chromium uchun MAP rule beramiz.
