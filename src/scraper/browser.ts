@@ -1,6 +1,5 @@
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { lookup } from 'node:dns/promises';
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
 import { config } from '../common/config.js';
 import { childLogger } from '../common/logger.js';
@@ -20,63 +19,20 @@ export interface BrowserSession {
 
 export async function createBrowserSession(): Promise<BrowserSession> {
   // PROXY_URL .env dan keladi (masalan: socks5://127.0.0.1:1080)
-  // SOCKS5 ishlatamiz lekin DNS'ni mahalliy hal qilamiz (host-resolver-rules MAP orqali).
-  // Playwright `proxy` parametrini bermay, to'g'ridan-to'g'ri chromium args orqali sozlaymiz —
-  // shunda Playwright o'zining MAP * ~NOTFOUND default'ini qo'shmaydi.
+  // Uz VPS chisel tunnel orqali sayt'ga UZ uy IP bilan ulanadi
   const proxyUrl = process.env.PROXY_URL ?? undefined;
-
-  // Chromium SOCKS5 da DNS'ni proxy orqali so'raydi, chisel uni qo'llab-quvvatlamaydi.
-  // Yechim: BASE_URL hostname'ni mahalliy hal qilamiz va chromium uchun MAP rule beramiz.
-  // Shunda chromium hostname → IP'ni o'zi biladi va SOCKS5 orqali faqat TCP yuboradi.
-  const hostRules: string[] = [];
-  if (proxyUrl) {
-    const hosts = [
-      'hive-respublika-new.royaltaxi.uz',
-      'hive-respublika.royaltaxi.uz',
-      'hive-toshkent-viloyati.royaltaxi.uz',
-      // BASE_URL'dan ham olamiz (kelajakdagi saytlar uchun)
-      ...(() => {
-        try {
-          const u = new URL(config.ROYALTAXI_BASE_URL);
-          return [u.hostname];
-        } catch { return []; }
-      })(),
-    ];
-    const seen = new Set<string>();
-    for (const h of hosts) {
-      if (seen.has(h)) continue;
-      seen.add(h);
-      try {
-        const r = await lookup(h);
-        hostRules.push(`MAP ${h} ${r.address}`);
-        log.info({ host: h, ip: r.address }, '🔧 DNS pre-resolve (chisel proxy-DNS bypass)');
-      } catch (e) {
-        log.warn({ host: h, err: (e as Error).message }, 'DNS lookup xato');
-      }
-    }
-  }
-
   log.info(
-    { headless: config.BROWSER_HEADLESS, proxy: proxyUrl ?? 'yo\'q', hostRules: hostRules.length },
+    { headless: config.BROWSER_HEADLESS, proxy: proxyUrl ?? 'yo\'q' },
     'Chromium ishga tushirilmoqda',
   );
 
-  const args = [
-    '--disable-blink-features=AutomationControlled',
-    '--disable-dev-shm-usage',
-    '--no-sandbox',
-  ];
-  // ASOSIY tuzatish: bizning MAP rules'imiz Playwright'ning MAP * ~NOTFOUND'idan KEYIN
-  // qo'shilishi shart — Chromium oxirgi --host-resolver-rules'ni ishlatadi.
-  // Bizning rules: aniq hostlarni IP'ga maps qiladi.
-  if (hostRules.length > 0) {
-    // Aniq MAP'lar + EXCLUDE wildcardlardan oldin (Playwright o'z wildcard'ini qo'shadi keyin)
-    args.push(`--host-resolver-rules=${hostRules.join(', ')}, EXCLUDE localhost`);
-  }
-
   const browser = await chromium.launch({
     headless: config.BROWSER_HEADLESS,
-    args,
+    args: [
+      '--disable-blink-features=AutomationControlled',
+      '--disable-dev-shm-usage',
+      '--no-sandbox',
+    ],
     proxy: proxyUrl ? { server: proxyUrl } : undefined,
   });
 
