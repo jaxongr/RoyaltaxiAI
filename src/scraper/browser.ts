@@ -1,5 +1,6 @@
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { lookup } from 'node:dns/promises';
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
 import { config } from '../common/config.js';
 import { childLogger } from '../common/logger.js';
@@ -19,21 +20,47 @@ export interface BrowserSession {
 
 export async function createBrowserSession(): Promise<BrowserSession> {
   // PROXY_URL .env dan keladi (masalan: socks5://127.0.0.1:1080)
-  // Uz VPS chisel tunnel orqali sayt'ga UZ uy IP bilan ulanadi
   const proxyUrl = process.env.PROXY_URL ?? undefined;
+
+  // MUHIM: chisel SOCKS5 server proxy-DNS resolution qo'llab-quvvatlamaydi.
+  // Playwright `proxy` parametrini ishlatsak, u "MAP * ~NOTFOUND" qo'shadi → DNS proxyga.
+  // Yechim: proxy'ni Playwright orqali EMAS, to'g'ridan-to'g'ri --proxy-server args orqali
+  // + barcha target hostlarning DNS'ini server tomonida hal qilib, MAP rule beramiz.
+  const hostRules: string[] = [];
+  if (proxyUrl) {
+    const targetHosts = ['hive-respublika-new.royaltaxi.uz', 'hive-respublika.royaltaxi.uz', 'hive-toshkent-viloyati.royaltaxi.uz'];
+    for (const h of targetHosts) {
+      try {
+        const r = await lookup(h);
+        hostRules.push(`MAP ${h} ${r.address}`);
+      } catch { /* skip */ }
+    }
+  }
+
   log.info(
-    { headless: config.BROWSER_HEADLESS, proxy: proxyUrl ?? 'yo\'q' },
+    { headless: config.BROWSER_HEADLESS, proxy: proxyUrl ?? 'yo\'q', hostMaps: hostRules.length },
     'Chromium ishga tushirilmoqda',
   );
 
+  const args = [
+    '--disable-blink-features=AutomationControlled',
+    '--disable-dev-shm-usage',
+    '--no-sandbox',
+  ];
+  // Proxy va MAP rule (--proxy-server qatorda OXIRGI bo'lsin: Playwright avval qo'shsa,
+  // bizniki override qiladi; aksincha bo'lsa ham — chromium oxirgi flag'ni ishlatadi)
+  if (proxyUrl) {
+    args.push(`--proxy-server=${proxyUrl}`);
+    args.push('--proxy-bypass-list=<-loopback>');
+    if (hostRules.length > 0) {
+      args.push(`--host-resolver-rules=${hostRules.join(', ')}`);
+    }
+  }
+
   const browser = await chromium.launch({
     headless: config.BROWSER_HEADLESS,
-    args: [
-      '--disable-blink-features=AutomationControlled',
-      '--disable-dev-shm-usage',
-      '--no-sandbox',
-    ],
-    proxy: proxyUrl ? { server: proxyUrl } : undefined,
+    args,
+    // proxy PARAMETRINI BERMAYMIZ — Playwright MAP * ~NOTFOUND qo'shadi va konflikt qiladi
   });
 
   const hasStorageState = existsSync(STORAGE_STATE_PATH);
