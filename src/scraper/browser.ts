@@ -66,19 +66,18 @@ export async function createBrowserSession(): Promise<BrowserSession> {
     '--disable-dev-shm-usage',
     '--no-sandbox',
   ];
-  if (proxyUrl) {
-    args.push(`--proxy-server=${proxyUrl}`);
-    args.push('--proxy-bypass-list=<-loopback>');
-  }
+  // ASOSIY tuzatish: bizning MAP rules'imiz Playwright'ning MAP * ~NOTFOUND'idan KEYIN
+  // qo'shilishi shart — Chromium oxirgi --host-resolver-rules'ni ishlatadi.
+  // Bizning rules: aniq hostlarni IP'ga maps qiladi.
   if (hostRules.length > 0) {
-    args.push(`--host-resolver-rules=${hostRules.join(', ')}`);
+    // Aniq MAP'lar + EXCLUDE wildcardlardan oldin (Playwright o'z wildcard'ini qo'shadi keyin)
+    args.push(`--host-resolver-rules=${hostRules.join(', ')}, EXCLUDE localhost`);
   }
 
   const browser = await chromium.launch({
     headless: config.BROWSER_HEADLESS,
     args,
-    // proxy: Playwright'ning proxy parametrini ishlatmaymiz — u qo'shimcha
-    // --host-resolver-rules="MAP * ~NOTFOUND" qo'shadi va biznikini buzadi
+    proxy: proxyUrl ? { server: proxyUrl } : undefined,
   });
 
   const hasStorageState = existsSync(STORAGE_STATE_PATH);
