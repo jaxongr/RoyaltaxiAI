@@ -2407,6 +2407,59 @@ const server = createServer(async (req, res) => {
     res.__cacheKey = cacheKey;
   }
 
+  // ===== Tunnel status — kim ulangan (PC/Telefon)? =====
+  if (req.method === 'GET' && path === '/api/tunnel-status') {
+    try {
+      const { execSync } = require('node:child_process');
+      // ss orqali chisel client'larining IP'larini olamiz (port 8080)
+      let clients: Array<{ ip: string; port: number }> = [];
+      try {
+        const out = execSync("ss -tn 'sport = :8080' state established", { encoding: 'utf-8', timeout: 2000 }).trim();
+        const lines = out.split('\n').slice(1);
+        for (const line of lines) {
+          const parts = line.trim().split(/\s+/);
+          if (parts.length >= 5) {
+            const peer = parts[4]; // peer_ip:port
+            const idx = peer.lastIndexOf(':');
+            if (idx > 0) {
+              clients.push({ ip: peer.substring(0, idx), port: parseInt(peer.substring(idx + 1), 10) });
+            }
+          }
+        }
+      } catch { /* ss xato */ }
+
+      // Port 1080 listening yoki yo'q
+      let port1080Listening = false;
+      try {
+        execSync("ss -tln 'sport = :1080'", { encoding: 'utf-8', timeout: 2000 });
+        const lp = execSync("ss -tln 'sport = :1080' state listening", { encoding: 'utf-8', timeout: 2000 });
+        port1080Listening = lp.includes('1080');
+      } catch { /* ignore */ }
+
+      // Proxy orqali test (1.5 sek timeout)
+      let proxyHealthy = false;
+      let proxyMs = -1;
+      try {
+        const start = Date.now();
+        execSync('curl -sS -o /dev/null -m 3 --socks5 127.0.0.1:1080 https://hive-respublika-new.royaltaxi.uz/management', { timeout: 4000 });
+        proxyMs = Date.now() - start;
+        proxyHealthy = proxyMs > 0 && proxyMs < 5000;
+      } catch { /* proxy ishlamaydi */ }
+
+      send(res, 200, {
+        connected: port1080Listening && proxyHealthy,
+        clients,
+        clientCount: clients.length,
+        port1080Listening,
+        proxyHealthy,
+        proxyMs,
+      });
+    } catch (e) {
+      send(res, 500, { error: 'tunnel-status xato' });
+    }
+    return;
+  }
+
   // ===== PUBLIC: Android APK redirect =====
   // Telefondan brauzer orqali yuklab olish: /Royaltaxi-Tunnel.apk
   // GitHub Release'ga 302 redirect — har doim eng so'nggi build
