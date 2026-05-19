@@ -32,6 +32,11 @@ export async function createBrowserSession(): Promise<BrowserSession> {
       '--disable-blink-features=AutomationControlled',
       '--disable-dev-shm-usage',
       '--no-sandbox',
+      // SOCKS5 proxy-side DNS resolution chisel'da ishlamaydi —
+      // DNS'ni mahalliy (server tomonida) hal qilamiz, faqat TCP traffic SOCKS orqali.
+      // Bu --socks5 (DNS local) rejimiga teng curl'da.
+      '--proxy-bypass-list=<-loopback>',
+      '--host-resolver-rules=EXCLUDE 127.0.0.1',
     ],
     proxy: proxyUrl ? { server: proxyUrl } : undefined,
   });
