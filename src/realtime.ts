@@ -286,19 +286,22 @@ async function ensureAllSubdivisionsChecked(session: BrowserSession): Promise<vo
         var sampleItemHtml = [];
         var brandedItems = [];
 
-        // 1) Har bir popup itemning DOM atributlarini va eng yaqin parentlarini tekshiramiz
-        var allPopupItems = document.querySelectorAll('.sub-item, .item-container, .item');
+        // 1) FAQAT popup itemlar — text'da [Brand] borlari. Sidebar emas.
+        var allPopupItems = document.querySelectorAll('.sub-item, .item-container, .item, li, div[class*="item"]');
         for (var pi=0; pi<allPopupItems.length; pi++) {
           var item = allPopupItems[pi];
-          // Item text (debug uchun) + parent atributlari
-          var itemText = (item.textContent || '').trim().slice(0, 80);
-          if (pi < 5) sampleItemHtml.push(item.outerHTML.slice(0, 300));
-          // Brand parsing: text ichida [Royal], [BizningTaxi], [BonusTaxi]
-          var brandMatch = itemText.match(/\\[([A-Za-zА-Яа-я0-9]+)\\]/);
-          if (brandMatch) {
-            brandedItems.push({ text: itemText, brand: brandMatch[1] });
+          var itemText = (item.textContent || '').trim();
+          // Faqat shortroq itemlar (full popup itemlar 100 ta char dan kam bo'ladi)
+          if (itemText.length > 200) continue;
+          // Brand pattern: [Royal], [BizningTaxi], [BonusTaxi]
+          var brandMatch = itemText.match(/\\[(Royal|BizningTaxi|BonusTaxi|[A-Za-z0-9]+Taxi)\\]/);
+          if (!brandMatch) continue;
+
+          brandedItems.push({ text: itemText.slice(0, 100), brand: brandMatch[1] });
+          if (sampleItemHtml.length < 5) {
+            sampleItemHtml.push(item.outerHTML.slice(0, 500));
           }
-          // Atributlarni o'qish (item va parent ham)
+          // Atributlarni o'qish — item, parent, va grand-parent
           var elementsToCheck = [item, item.parentElement, item.parentElement && item.parentElement.parentElement];
           for (var ec=0; ec<elementsToCheck.length; ec++) {
             var el = elementsToCheck[ec];
