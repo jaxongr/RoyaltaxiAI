@@ -24,11 +24,11 @@ jobs:
         uses: android-actions/setup-android@v3
 
       - name: Download chisel binaries (arm64, armv7, amd64)
-        working-directory: android-app/app/src/main/jniLibs
         run: |
           set -eux
+          mkdir -p android-app/app/src/main/jniLibs/arm64-v8a android-app/app/src/main/jniLibs/armeabi-v7a android-app/app/src/main/jniLibs/x86_64
+          cd android-app/app/src/main/jniLibs
           CV=1.10.1
-          mkdir -p arm64-v8a armeabi-v7a x86_64
           # arm64
           curl -fsSL -o /tmp/chisel-arm64.gz "https://github.com/jpillora/chisel/releases/download/v${CV}/chisel_${CV}_linux_arm64.gz"
           gunzip -c /tmp/chisel-arm64.gz > arm64-v8a/libchisel.so
