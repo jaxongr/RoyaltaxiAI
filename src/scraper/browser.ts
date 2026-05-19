@@ -20,12 +20,10 @@ export interface BrowserSession {
 
 export async function createBrowserSession(): Promise<BrowserSession> {
   // PROXY_URL .env dan keladi (masalan: socks5://127.0.0.1:1080)
-  // MUHIM: socks5:// → socks4:// ga o'zgartiramiz — chunki chisel SOCKS5 proxy-side DNS
-  // qo'llab-quvvatlamaydi. SOCKS4 majburiy ravishda mahalliy DNS ishlatadi.
-  let proxyUrl = process.env.PROXY_URL ?? undefined;
-  if (proxyUrl && proxyUrl.startsWith('socks5://')) {
-    proxyUrl = 'socks4://' + proxyUrl.substring('socks5://'.length);
-  }
+  // SOCKS5 ishlatamiz lekin DNS'ni mahalliy hal qilamiz (host-resolver-rules MAP orqali).
+  // Playwright `proxy` parametrini bermay, to'g'ridan-to'g'ri chromium args orqali sozlaymiz —
+  // shunda Playwright o'zining MAP * ~NOTFOUND default'ini qo'shmaydi.
+  const proxyUrl = process.env.PROXY_URL ?? undefined;
 
   // Chromium SOCKS5 da DNS'ni proxy orqali so'raydi, chisel uni qo'llab-quvvatlamaydi.
   // Yechim: BASE_URL hostname'ni mahalliy hal qilamiz va chromium uchun MAP rule beramiz.
@@ -67,8 +65,11 @@ export async function createBrowserSession(): Promise<BrowserSession> {
     '--disable-blink-features=AutomationControlled',
     '--disable-dev-shm-usage',
     '--no-sandbox',
-    '--proxy-bypass-list=<-loopback>',
   ];
+  if (proxyUrl) {
+    args.push(`--proxy-server=${proxyUrl}`);
+    args.push('--proxy-bypass-list=<-loopback>');
+  }
   if (hostRules.length > 0) {
     args.push(`--host-resolver-rules=${hostRules.join(', ')}`);
   }
@@ -76,8 +77,8 @@ export async function createBrowserSession(): Promise<BrowserSession> {
   const browser = await chromium.launch({
     headless: config.BROWSER_HEADLESS,
     args,
-    ignoreDefaultArgs: ['--host-resolver-rules'],
-    proxy: proxyUrl ? { server: proxyUrl } : undefined,
+    // proxy: Playwright'ning proxy parametrini ishlatmaymiz — u qo'shimcha
+    // --host-resolver-rules="MAP * ~NOTFOUND" qo'shadi va biznikini buzadi
   });
 
   const hasStorageState = existsSync(STORAGE_STATE_PATH);
