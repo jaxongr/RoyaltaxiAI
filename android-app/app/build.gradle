@@ -1,0 +1,37 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.royaltaxi.tunnel'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.royaltaxi.tunnel"
+        minSdk 21
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    packaging {
+        jniLibs {
+            // chisel .so fayllarini install paytida ajratish (exec uchun kerak)
+            useLegacyPackaging true
+        }
+    }
+}
+
+dependencies {
+}
