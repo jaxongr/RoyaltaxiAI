@@ -445,13 +445,15 @@ async function ensureAllBrandsChecked(session: BrowserSession): Promise<void> {
           el.dispatchEvent(new MouseEvent('click', opts));
         }
 
-        // 1) Бренд filter trigger
-        var labels = Array.from(document.querySelectorAll('label'));
+        // 1) Бренд filter trigger — keng pattern
+        var labels = Array.from(document.querySelectorAll('label, .filter-label, [class*="label"], legend, h3, h4'));
         var trigger = null;
         var labelMatched = '';
+        var allLabelTexts = [];
         for (var i=0; i<labels.length; i++) {
           var t = (labels[i].textContent || '').trim();
-          if (/^(Бренд|Бренды|Brand|Brands|Operator|Brendlar)$/i.test(t)) {
+          if (t.length > 0 && t.length < 50) allLabelTexts.push(t);
+          if (/^(Бренд|Бренды|Brand|Brands|Brendlar|Brendi|Оператор|Operator|Тариф|Тарифы|Tariff|Service)\\b/i.test(t)) {
             var parent = labels[i].parentElement;
             if (parent) {
               var inp = parent.querySelector('input.mselect-input, input[class*="select"], .select-default, [class*="select"]');
@@ -463,7 +465,7 @@ async function ensureAllBrandsChecked(session: BrowserSession): Promise<void> {
         }
 
         if (!trigger) {
-          return { ok: false, reason: 'brand-trigger-not-found' };
+          return { ok: false, reason: 'brand-trigger-not-found', allLabels: allLabelTexts.slice(0, 30) };
         }
 
         trigger.scrollIntoView({ block: 'center' });
@@ -570,11 +572,20 @@ async function ensureAllBrandsChecked(session: BrowserSession): Promise<void> {
       uncheckedBefore?: number;
       checkedBefore?: number;
       names?: string[];
+      allLabels?: string[];
     };
 
     if (!result.ok) {
-      // Brend filter topilmadi — bu OK, ba'zi loginlarda yo'q
-      logger.debug({ reason: result.reason }, 'Brend filter topilmadi (login uchun mavjud emas)');
+      // INFO darajasi: foydalanuvchi nima labellari borligini ko'rishi kerak
+      logger.info({ reason: result.reason, allLabels: result.allLabels }, '🔎 Brend filter topilmadi — sahifadagi labellar');
+      // DOM dump qilamiz qaysi label brend uchun
+      try {
+        const html = await page.content();
+        const fs = await import('node:fs');
+        const dumpPath = `/tmp/brand-debug-${Date.now()}.html`;
+        fs.writeFileSync(dumpPath, html);
+        logger.info({ dumpPath, htmlLen: html.length }, 'Brend debug HTML dump');
+      } catch { /* ignore */ }
       return;
     }
     if ((result.newlyChecked ?? 0) > 0) {
