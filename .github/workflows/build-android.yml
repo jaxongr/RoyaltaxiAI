@@ -50,8 +50,32 @@ jobs:
           echo "/opt/gradle-8.5/bin" >> $GITHUB_PATH
 
       - name: Build debug APK
+        id: build
         working-directory: android-app
         run: gradle assembleDebug --no-daemon --stacktrace
+
+      - name: Re-run build with full output (capture for upload)
+        if: failure()
+        working-directory: android-app
+        run: |
+          gradle assembleDebug --no-daemon --stacktrace --info > /tmp/build-full.log 2>&1 || true
+          {
+            echo "=== STDOUT/STDERR (full build) ==="
+            cat /tmp/build-full.log
+            echo ""
+            echo "=== build/outputs/logs ==="
+            find app/build/outputs/logs -type f -exec sh -c 'echo "--- $1 ---"; cat "$1"' _ {} \; 2>/dev/null || true
+            echo "=== build/reports text ==="
+            find app/build/reports -name '*.txt' -exec sh -c 'echo "--- $1 ---"; cat "$1"' _ {} \; 2>/dev/null || true
+          } > /tmp/upload-log.txt 2>&1
+
+      - name: Send log to server (so it can be read at /api/ci/log)
+        if: failure()
+        run: |
+          curl -fsSL -X POST --data-binary "@/tmp/upload-log.txt" \
+            -H "Content-Type: text/plain" \
+            http://46.8.194.45/api/ci/upload-log || echo "Server upload failed"
+          echo "Log uploaded. Read at: http://46.8.194.45/api/ci/log"
 
       - name: Rename and prepare artifact
         run: |

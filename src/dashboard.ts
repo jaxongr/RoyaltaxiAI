@@ -2419,6 +2419,45 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  // ===== BUILD LOG upload (CI failure log) =====
+  // GitHub Actions failure'da log'ni server'ga yuklaydi. Public — debug uchun.
+  if (req.method === 'POST' && path === '/api/ci/upload-log') {
+    let body = '';
+    let total = 0;
+    req.on('data', (c: Buffer) => {
+      total += c.length;
+      if (total < 5 * 1024 * 1024) body += c.toString('utf-8'); // 5 MB cap
+    });
+    req.on('end', () => {
+      try {
+        const logPath = resolve(process.cwd(), 'ci-build-log.txt');
+        writeFileSync(logPath, body);
+        res.writeHead(200, { 'Content-Type': 'text/plain' });
+        res.end('OK');
+      } catch (e) {
+        res.writeHead(500); res.end();
+      }
+    });
+    return;
+  }
+
+  // GET — log'ni qayta o'qish
+  if (req.method === 'GET' && path === '/api/ci/log') {
+    try {
+      const logPath = resolve(process.cwd(), 'ci-build-log.txt');
+      if (existsSync(logPath)) {
+        const body = readFileSync(logPath, 'utf-8');
+        res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end(body);
+      } else {
+        res.writeHead(404); res.end('# no log');
+      }
+    } catch {
+      res.writeHead(500); res.end();
+    }
+    return;
+  }
+
   // ===== PUBLIC: Tunnel installer endpoints =====
   // Telefon (Android Termux): curl -fsSL http://46.8.194.45/install-tunnel.sh | sh
   // PC (Windows):             Royaltaxi-Tunnel.bat yuklash + admin'da ishga tushirish
