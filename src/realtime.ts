@@ -280,32 +280,73 @@ async function ensureAllSubdivisionsChecked(session: BrowserSession): Promise<vo
 
         var checkboxes = Array.from(document.querySelectorAll('.checkbox_unchecked, .checkbox_checked'));
 
-        // OFFICE ID EXTRACTION: popup ochilganda, har bir checkbox'ning parent ichida
-        // officeId saqlanadi (data-* atributlarda yoki HTML attributesda).
-        // Bu officeId'larni getOrders'ga explicit uzatish — saved filter'ni bypass qiladi.
+        // OFFICE ID EXTRACTION — kengaytirilgan: 3 ta strategiya
         var extractedOfficeIds = [];
         var seenIds = {};
-        // Avvalo har bir popup item elementini tekshiramiz
+        var sampleItemHtml = [];
+        var brandedItems = [];
+
+        // 1) Har bir popup itemning DOM atributlarini va eng yaqin parentlarini tekshiramiz
         var allPopupItems = document.querySelectorAll('.sub-item, .item-container, .item');
         for (var pi=0; pi<allPopupItems.length; pi++) {
           var item = allPopupItems[pi];
-          var attrs = item.attributes;
-          for (var ai=0; ai<attrs.length; ai++) {
-            var val = attrs[ai].value;
-            if (/^\\d{15,20}$/.test(val) && !seenIds[val]) {
-              seenIds[val] = true;
-              extractedOfficeIds.push(val);
+          // Item text (debug uchun) + parent atributlari
+          var itemText = (item.textContent || '').trim().slice(0, 80);
+          if (pi < 5) sampleItemHtml.push(item.outerHTML.slice(0, 300));
+          // Brand parsing: text ichida [Royal], [BizningTaxi], [BonusTaxi]
+          var brandMatch = itemText.match(/\\[([A-Za-zА-Яа-я0-9]+)\\]/);
+          if (brandMatch) {
+            brandedItems.push({ text: itemText, brand: brandMatch[1] });
+          }
+          // Atributlarni o'qish (item va parent ham)
+          var elementsToCheck = [item, item.parentElement, item.parentElement && item.parentElement.parentElement];
+          for (var ec=0; ec<elementsToCheck.length; ec++) {
+            var el = elementsToCheck[ec];
+            if (!el || !el.attributes) continue;
+            for (var ai=0; ai<el.attributes.length; ai++) {
+              var val = el.attributes[ai].value;
+              if (/^\\d{12,20}$/.test(val) && !seenIds[val]) {
+                seenIds[val] = true;
+                extractedOfficeIds.push(val);
+              }
             }
           }
         }
-        // HTML-da JSON pattern ham qidiramiz
+
+        // 2) HTML JSON pattern (turli formatlar)
         var bodyHtml = document.body.innerHTML;
-        var re = /"officeId"\\s*:\\s*"?(\\d{15,20})"?/g;
-        var match;
-        while ((match = re.exec(bodyHtml)) !== null) {
-          if (!seenIds[match[1]]) {
-            seenIds[match[1]] = true;
-            extractedOfficeIds.push(match[1]);
+        var patterns = [
+          /"officeId"\\s*:\\s*"?(\\d{12,20})"?/g,
+          /"office_id"\\s*:\\s*"?(\\d{12,20})"?/g,
+          /"subdivisionId"\\s*:\\s*"?(\\d{12,20})"?/g,
+          /"id"\\s*:\\s*"?(239\\d{12,17})"?/g,  // Qashqadaryo officeIDs 239 bilan boshlanadi
+          /data-office-id\\s*=\\s*['"]?(\\d{12,20})/g,
+          /data-id\\s*=\\s*['"]?(239\\d{12,17})/g,
+        ];
+        for (var ri=0; ri<patterns.length; ri++) {
+          var re = patterns[ri];
+          var match;
+          while ((match = re.exec(bodyHtml)) !== null) {
+            if (!seenIds[match[1]]) {
+              seenIds[match[1]] = true;
+              extractedOfficeIds.push(match[1]);
+            }
+          }
+        }
+
+        // 3) Vue/React komponent state ichidan — windowda Vue instance bormi?
+        // Sodda yondashuv: scriptlardan qidiramiz
+        var scripts = document.querySelectorAll('script');
+        for (var si=0; si<scripts.length; si++) {
+          var sc = scripts[si].textContent || '';
+          var m2 = sc.match(/239\\d{12,17}/g);
+          if (m2) {
+            for (var mi=0; mi<m2.length; mi++) {
+              if (!seenIds[m2[mi]]) {
+                seenIds[m2[mi]] = true;
+                extractedOfficeIds.push(m2[mi]);
+              }
+            }
           }
         }
 
@@ -348,7 +389,9 @@ async function ensureAllSubdivisionsChecked(session: BrowserSession): Promise<vo
           newlyChecked: checkedCount,
           alreadyChecked: alreadyChecked,
           names: checkedNames,
-          officeIds: extractedOfficeIds
+          officeIds: extractedOfficeIds,
+          sampleItemHtml: sampleItemHtml,
+          brandedItems: brandedItems
         };
       })()
     `;
@@ -361,7 +404,18 @@ async function ensureAllSubdivisionsChecked(session: BrowserSession): Promise<vo
       alreadyChecked?: number;
       names?: string[];
       officeIds?: string[];
+      sampleItemHtml?: string[];
+      brandedItems?: Array<{ text: string; brand: string }>;
     };
+
+    // Debug — qaysi brendlar topildi va item html
+    if (result.brandedItems && result.brandedItems.length > 0) {
+      const brands = new Set(result.brandedItems.map((b) => b.brand));
+      logger.info({ brands: [...brands], count: result.brandedItems.length }, '🏷️  Subdivision popup brendlari topildi');
+    }
+    if (result.sampleItemHtml && result.sampleItemHtml.length > 0) {
+      logger.info({ samples: result.sampleItemHtml.slice(0, 2) }, '🔬 Subdivision item HTML namunalari (debug)');
+    }
 
     // Agar UI'dan officeId'lar topilgan bo'lsa, accessibleOfficeIds'ga saqlaymiz
     // (keyingi getOrders chaqiriqlarida explicit officeIds: [...] ishlatiladi)
