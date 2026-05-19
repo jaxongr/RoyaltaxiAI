@@ -579,10 +579,12 @@ async function ensureAllBrandsChecked(session: BrowserSession): Promise<void> {
       allLabels?: string[];
     };
 
+    // HAR DOIM raw resultni log qilamiz (debug)
+    logger.info({ result }, '🏷️  ensureAllBrandsChecked natija');
+
     if (!result.ok) {
       // INFO darajasi: foydalanuvchi nima labellari borligini ko'rishi kerak
       logger.info({ reason: result.reason, allLabels: result.allLabels }, '🔎 Brend filter topilmadi — sahifadagi labellar');
-      // DOM dump qilamiz qaysi label brend uchun
       try {
         const html = await page.content();
         const fs = await import('node:fs');
@@ -601,6 +603,11 @@ async function ensureAllBrandsChecked(session: BrowserSession): Promise<void> {
       logger.info(
         { label: result.labelMatched, totalBrands: result.totalBrands, names: result.names },
         `Brend UI: hammasi allaqachon belgilangan (${result.totalBrands} ta) — ${(result.names ?? []).join(', ')}`,
+      );
+    } else {
+      logger.info(
+        { label: result.labelMatched, result },
+        `⚠️ Brend UI: trigger topildi ("${result.labelMatched}") lekin checkbox yo'q — dropdown ochilmagan bo'lishi mumkin`,
       );
     }
   } catch (err) {
