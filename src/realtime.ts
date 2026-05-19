@@ -427,7 +427,11 @@ async function ensureAllSubdivisionsChecked(session: BrowserSession): Promise<vo
 // Бренд (Brand) filtri — Royaltaxi, Bonus Taxi, Taxi 1283 hammasini belgilash
 // Foydalanuvchi shikoyati: Qashqadaryo'da faqat Royaltaxi ko'rinmoqda — Bonus Taxi va Taxi 1283 ko'rilmayapti
 async function ensureAllBrandsChecked(session: BrowserSession): Promise<void> {
-  if (process.env.AUTO_SELECT_ALL === '0') return;
+  logger.info('🏷️  ensureAllBrandsChecked boshlandi');
+  if (process.env.AUTO_SELECT_ALL === '0') {
+    logger.info('AUTO_SELECT_ALL=0 — brend tekshirish o\'tkazib yuborildi');
+    return;
+  }
   const { page } = session;
   try {
     const evalBody = `
