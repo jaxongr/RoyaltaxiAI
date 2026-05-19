@@ -280,11 +280,13 @@ public class TunnelService extends Service {
                         chiselPath,
                         "client",
                         "--auth", AUTH,
-                        "--keepalive", "15s",     // 25s → 15s (tezroq detect)
-                        "--max-retry-interval", "3s",  // 5s → 3s
+                        "--keepalive", "15s",
+                        "--max-retry-interval", "3s",
                         "--max-retry-count", "-1",
                         SERVER_URL,
-                        "R:1080:socks"
+                        // Telefon port 1081'ga binding — PC'ning 1080 bilan konflikt qilmasligi uchun
+                        // (PC va telefon parallel ishlasin, dashboard tanlash imkoni beradi)
+                        "R:1081:socks"
                 );
                 pb.redirectErrorStream(true);
                 chiselProc = pb.start();

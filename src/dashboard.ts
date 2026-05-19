@@ -2021,8 +2021,31 @@ function spawnMonitorForSite(site: SiteRow): { ok: boolean; pid?: number; error?
     env.PROXY_URL = ''; // bo'sh = proxy yo'q
     logForSite(site.id, `🌐 PROXY YO'Q — to'g'ridan-to'g'ri (tezroq)\n`);
   } else {
-    // use_proxy=1 (TUNEL) — PROXY_URL dashboard env'dan meros bo'ladi
-    const inheritedProxy = process.env.PROXY_URL ?? '';
+    // active_tunnel ga qarab port tanlash: pc=1080, phone=1081, auto=birinchi sog'lom
+    let tunnelPort = 1080;
+    try {
+      const r = openDb().prepare("SELECT value FROM kv_settings WHERE key='active_tunnel'").get() as { value?: string } | undefined;
+      const sel = r?.value ?? 'auto';
+      if (sel === 'phone') tunnelPort = 1081;
+      else if (sel === 'pc') tunnelPort = 1080;
+      else {
+        // auto: sog'lom tunnelni tanlash (PC birinchi, telefon zaxira)
+        try {
+          execSync(`ss -tln '( sport = :1080 )' | grep -q LISTEN`, { timeout: 1000 });
+          tunnelPort = 1080;
+        } catch {
+          try {
+            execSync(`ss -tln '( sport = :1081 )' | grep -q LISTEN`, { timeout: 1000 });
+            tunnelPort = 1081;
+          } catch { /* ikkalasi ham yo'q — 1080 default */ }
+        }
+      }
+      env.PROXY_URL = `socks5://127.0.0.1:${tunnelPort}`;
+      logForSite(site.id, `🚇 TUNEL: ${sel} → port ${tunnelPort}\n`);
+    } catch { /* DB xato — eski usul */
+      env.PROXY_URL = process.env.PROXY_URL ?? '';
+    }
+    const inheritedProxy = env.PROXY_URL ?? '';
     if (!inheritedProxy) {
       logForSite(
         site.id,
@@ -2407,25 +2430,21 @@ const server = createServer(async (req, res) => {
     res.__cacheKey = cacheKey;
   }
 
-  // ===== Tunnel status — kim ulangan (PC/Telefon)? =====
+  // ===== Tunnel status — PC (port 1080) va Telefon (port 1081) =====
   if (req.method === 'GET' && path === '/api/tunnel-status') {
     try {
-      // ss orqali chisel client'larining IP'larini olamiz (port 8080)
-      // ss syntax: state KEYWORD KEYWORD bo'lishi kerak FILTER ekspressiyadan oldin
+      // ss orqali 8080 portga ulangan client IP'larini olamiz
       let clients: Array<{ ip: string; port: number }> = [];
       try {
         const out = execSync("ss -tn state established '( sport = :8080 )'", { encoding: 'utf-8', timeout: 2000 }).trim();
         const lines = out.split('\n').slice(1);
         for (const line of lines) {
           const parts = line.trim().split(/\s+/);
-          // ESTABLISHED: format = "Recv-Q Send-Q Local:Port Peer:Port"
-          // No 'State' column when filtered by state
           if (parts.length >= 4) {
             const peer = parts[3];
             const idx = peer.lastIndexOf(':');
             if (idx > 0) {
               let ip = peer.substring(0, idx);
-              // [::ffff:X.X.X.X] → X.X.X.X (IPv6-mapped IPv4)
               ip = ip.replace(/^\[?::ffff:/i, '').replace(/\]$/, '');
               if (ip && ip !== '0.0.0.0' && ip !== '127.0.0.1') {
                 clients.push({ ip, port: parseInt(peer.substring(idx + 1), 10) });
@@ -2433,36 +2452,80 @@ const server = createServer(async (req, res) => {
             }
           }
         }
-      } catch { /* ss xato */ }
-
-      // Port 1080 listening yoki yo'q
-      let port1080Listening = false;
-      try {
-        const lp = execSync("ss -tln '( sport = :1080 )'", { encoding: 'utf-8', timeout: 2000 });
-        port1080Listening = /LISTEN/.test(lp) && /:1080/.test(lp);
       } catch { /* ignore */ }
 
-      // Proxy orqali test (1.5 sek timeout)
-      let proxyHealthy = false;
-      let proxyMs = -1;
+      // PC tunnel = port 1080, Telefon tunnel = port 1081
+      function checkProxy(p: number): { listening: boolean; healthy: boolean; ms: number } {
+        let listening = false;
+        try {
+          const lp = execSync(`ss -tln '( sport = :${p} )'`, { encoding: 'utf-8', timeout: 2000 });
+          listening = /LISTEN/.test(lp) && new RegExp(`:${p}`).test(lp);
+        } catch { /* ignore */ }
+        let healthy = false;
+        let ms = -1;
+        if (listening) {
+          try {
+            const start = Date.now();
+            execSync(`curl -sS -o /dev/null -m 3 --socks5 127.0.0.1:${p} https://hive-respublika-new.royaltaxi.uz/management`, { timeout: 4000 });
+            ms = Date.now() - start;
+            healthy = ms > 0 && ms < 5000;
+          } catch { /* ignore */ }
+        }
+        return { listening, healthy, ms };
+      }
+
+      const pcTunnel = checkProxy(1080);
+      const phoneTunnel = checkProxy(1081);
+
+      // Tanlangan tunnel (DB'dan)
+      let activeTunnel = 'auto';
       try {
-        const start = Date.now();
-        execSync('curl -sS -o /dev/null -m 3 --socks5 127.0.0.1:1080 https://hive-respublika-new.royaltaxi.uz/management', { timeout: 4000 });
-        proxyMs = Date.now() - start;
-        proxyHealthy = proxyMs > 0 && proxyMs < 5000;
-      } catch { /* proxy ishlamaydi */ }
+        const r = openDb().prepare("SELECT value FROM kv_settings WHERE key='active_tunnel'").get() as { value?: string } | undefined;
+        if (r?.value) activeTunnel = r.value;
+      } catch { /* ignore */ }
 
       send(res, 200, {
-        connected: port1080Listening && proxyHealthy,
+        // Backward compat
+        connected: pcTunnel.healthy || phoneTunnel.healthy,
         clients,
         clientCount: clients.length,
-        port1080Listening,
-        proxyHealthy,
-        proxyMs,
+        port1080Listening: pcTunnel.listening,
+        proxyHealthy: pcTunnel.healthy,
+        proxyMs: pcTunnel.ms,
+        // Yangi: ikkala tunnel
+        pc: pcTunnel,
+        phone: phoneTunnel,
+        activeTunnel, // 'auto' | 'pc' | 'phone'
       });
-    } catch (e) {
+    } catch {
       send(res, 500, { error: 'tunnel-status xato' });
     }
+    return;
+  }
+
+  // Tunnel tanlash (auto/pc/phone)
+  if (req.method === 'POST' && path === '/api/tunnel-select') {
+    const v = verifyToken(getAuthFromReq(req));
+    if (!v.ok) { send(res, 401, { ok: false, error: 'Login kerak' }); return; }
+    let body = '';
+    req.on('data', (c: Buffer) => { body += c.toString('utf-8'); if (body.length > 1024) req.destroy(); });
+    req.on('end', () => {
+      try {
+        const parsed = JSON.parse(body || '{}') as { tunnel?: string };
+        const t = parsed.tunnel;
+        if (t !== 'auto' && t !== 'pc' && t !== 'phone') {
+          send(res, 400, { ok: false, error: 'tunnel: auto|pc|phone' });
+          return;
+        }
+        const db = openDb();
+        db.prepare(`CREATE TABLE IF NOT EXISTS kv_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT DEFAULT CURRENT_TIMESTAMP)`).run();
+        db.prepare(`INSERT INTO kv_settings (key, value, updated_at) VALUES ('active_tunnel', ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`).run(t);
+        send(res, 200, { ok: true, tunnel: t, note: 'Monitor qayta tushganda yangi tunnel ishlatiladi' });
+      } catch (e) {
+        send(res, 500, { ok: false, error: (e as Error).message });
+      }
+    });
     return;
   }
 

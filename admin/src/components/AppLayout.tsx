@@ -190,6 +190,9 @@ export default function AppLayout(): JSX.Element {
     clients: Array<{ ip: string; port: number }>;
     clientCount: number;
     proxyMs: number;
+    pc: { listening: boolean; healthy: boolean; ms: number };
+    phone: { listening: boolean; healthy: boolean; ms: number };
+    activeTunnel: string;
   }
   const { data: tunnel } = useQuery<TunnelStatus>({
     queryKey: ['tunnel-status'],
@@ -197,6 +200,17 @@ export default function AppLayout(): JSX.Element {
     refetchInterval: 10000,
     retry: false,
   });
+
+  const qc = (window as unknown as { __qc?: { invalidate: () => void } }).__qc;
+  const setTunnel = async (val: 'auto' | 'pc' | 'phone'): Promise<void> => {
+    try {
+      await api.post('/tunnel-select', { tunnel: val });
+      message.success(`Tunnel: ${val} — yangi tick'da qo'llaniladi`);
+      if (qc) qc.invalidate();
+    } catch (e: unknown) {
+      message.error(`Xato: ${(e as Error).message ?? 'unknown'}`);
+    }
+  };
 
   const cov = data?.coveragePct ?? null;
   const tickAgo = data?.secondsSinceLastTick ?? null;
@@ -296,18 +310,26 @@ export default function AppLayout(): JSX.Element {
               <div className="item">Tick: <b>{data?.tickCount ?? 0}</b></div>
               <div className="item">Oxirgi: <b>{tickAgo === null ? '—' : `${tickAgo} sek`}</b></div>
               <Tooltip title={tunnel
-                ? (tunnel.connected
-                    ? `Tunel ulangan (${tunnel.proxyMs}ms) — ${tunnel.clientCount} ta ulanish\n${tunnel.clients.map((c) => `• ${c.ip}`).join('\n') || '—'}`
-                    : 'Tunel uzilgan — telefon yoki PC ulanishi kerak')
+                ? `PC: ${tunnel.pc.healthy ? `✅ ${tunnel.pc.ms}ms` : '❌'}\nTelefon: ${tunnel.phone.healthy ? `✅ ${tunnel.phone.ms}ms` : '❌'}\nFaol: ${tunnel.activeTunnel}`
                 : 'Tunel holati noma\'lum'}>
-                <div className="item" style={{ cursor: 'pointer' }}
-                  onClick={() => nav('/mobile-tunnel')}>
+                <div className="item">
                   <span className={`pulse ${tunnel?.connected ? '' : 'dead'}`} />
-                  {' '}Tunel: <b>{tunnel
-                    ? (tunnel.connected
-                        ? (tunnel.clientCount > 0 ? '🔌 Ulangan' : '⚠️ Yo\'q')
-                        : '❌ Uzilgan')
-                    : '...'}</b>
+                  {' '}Tunel:&nbsp;
+                  <Dropdown
+                    menu={{
+                      items: [
+                        { key: 'auto', label: `⚡ Avto` },
+                        { key: 'pc', label: `💻 PC ${tunnel?.pc.healthy ? '✅' : '❌'}` },
+                        { key: 'phone', label: `📱 Telefon ${tunnel?.phone.healthy ? '✅' : '❌'}` },
+                      ],
+                      onClick: ({ key }) => setTunnel(key as 'auto' | 'pc' | 'phone'),
+                    }}
+                  >
+                    <a onClick={(e) => e.preventDefault()} style={{ cursor: 'pointer' }}>
+                      <b>{tunnel?.activeTunnel === 'phone' ? '📱 Telefon' : tunnel?.activeTunnel === 'pc' ? '💻 PC' : '⚡ Avto'}</b>
+                      {' '}{tunnel?.connected ? '🟢' : '🔴'}
+                    </a>
+                  </Dropdown>
                 </div>
               </Tooltip>
               <Tooltip title="Oxirgi 1 soatda kelgan ogohlantirishlar">
