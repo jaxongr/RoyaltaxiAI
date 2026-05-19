@@ -2407,6 +2407,33 @@ const server = createServer(async (req, res) => {
     res.__cacheKey = cacheKey;
   }
 
+  // ===== PUBLIC: Mobil tunnel installer (Termux'dan curl uchun) =====
+  // Foydalanuvchi telefonidagi Termux'da:
+  //   curl -fsSL http://46.8.194.45/install-tunnel.sh | sh
+  // Hech qanday auth talab qilinmaydi (chisel auth'ni o'zi tekshiradi).
+  if (req.method === 'GET' && path === '/install-tunnel.sh') {
+    try {
+      const scriptPath = resolve(process.cwd(), 'tools', 'termux-tunnel-install.sh');
+      if (existsSync(scriptPath)) {
+        const body = readFileSync(scriptPath, 'utf-8');
+        res.writeHead(200, {
+          'Content-Type': 'text/x-shellscript; charset=utf-8',
+          'Cache-Control': 'no-store',
+          'Content-Length': String(Buffer.byteLength(body)),
+        });
+        res.end(body);
+        return;
+      }
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end('# installer skript topilmadi');
+      return;
+    } catch {
+      res.writeHead(500, { 'Content-Type': 'text/plain' });
+      res.end('# server xatosi');
+      return;
+    }
+  }
+
   // ===== AUTH endpoint =====
   if (req.method === 'POST' && path === '/api/login') {
     try {

@@ -31,6 +31,7 @@ const DriverActivityPage = lazy(() => import('./pages/DriverActivityPage'));
 const TelegramUsersPage = lazy(() => import('./pages/TelegramUsersPage'));
 const ReportsPage = lazy(() => import('./pages/ReportsPage'));
 const SettingsPage = lazy(() => import('./pages/SettingsPage'));
+const MobileTunnelPage = lazy(() => import('./pages/MobileTunnelPage'));
 
 function RequireAuth({ children }: { children: JSX.Element }): JSX.Element {
   const loc = useLocation();
@@ -80,6 +81,7 @@ export default function App(): JSX.Element {
         <Route path="/telegram-users" element={<LazyRoute Page={TelegramUsersPage} />} />
         <Route path="/reports" element={<LazyRoute Page={ReportsPage} />} />
         <Route path="/settings" element={<LazyRoute Page={SettingsPage} />} />
+        <Route path="/mobile-tunnel" element={<LazyRoute Page={MobileTunnelPage} />} />
       </Route>
     </Routes>
   );

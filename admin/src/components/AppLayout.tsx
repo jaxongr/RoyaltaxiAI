@@ -29,6 +29,7 @@ import {
   MenuUnfoldOutlined,
   LogoutOutlined,
   ReloadOutlined,
+  MobileOutlined,
 } from '@ant-design/icons';
 import { useNavigate, useLocation, Outlet } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
@@ -105,6 +106,7 @@ const menuItems: MenuProps['items'] = [
     label: 'ADMIN',
     children: [
       { key: '/sites', icon: <GlobalOutlined />, label: 'Saytlar' },
+      { key: '/mobile-tunnel', icon: <MobileOutlined />, label: 'Mobil tunel' },
       { key: '/telegram-users', icon: <RobotOutlined />, label: 'Bot foydalanuvchilar' },
       { key: '/audit', icon: <AuditOutlined />, label: 'Audit log' },
       { key: '/settings', icon: <SettingOutlined />, label: 'Sozlamalar' },
